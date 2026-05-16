@@ -634,6 +634,6 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     window = Manager()
-    window.resize(1920, 1080)
+    window.resize(1920, 1245)
     window.show()
     sys.exit(app.exec_())

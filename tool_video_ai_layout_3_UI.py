@@ -44,7 +44,7 @@ class Ui_Widget(object):
         sc = self._sc
 
         Widget.setObjectName("Widget")
-        Widget.resize(_s(1800, sc), _s(1020, sc))
+        Widget.resize(_s(1800, sc), _s(1245, sc))
 
         self.centralwidget = QtWidgets.QWidget(Widget)
         Widget.setCentralWidget(self.centralwidget)

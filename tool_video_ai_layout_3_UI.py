@@ -92,10 +92,10 @@ class Ui_Widget(object):
         lv.addWidget(self.cb_browser)
 
         # Proxy nhập thủ công (thu gọn / mở rộng)
-        lv.addWidget(self._lbl("Danh sách Proxy", "grpLabel"))
+        lv.addWidget(self._lbl("Danh sách ID Profile", "grpLabel"))
 
         # Nút thu gọn (mặc định hiển thị)
-        self.btn_proxy_collapsed = QtWidgets.QPushButton("📋  Nhấp để nhập proxy...")
+        self.btn_proxy_collapsed = QtWidgets.QPushButton("📋  Nhấp để nhập danh sách Profile")
         self.btn_proxy_collapsed.setObjectName("proxyCollapsedBtn")
         self.btn_proxy_collapsed.setFixedHeight(_s(34, sc))
         self.btn_proxy_collapsed.setCursor(QtCore.Qt.PointingHandCursor)
@@ -109,8 +109,7 @@ class Ui_Widget(object):
         panel_lay.setSpacing(_s(4,sc))
         lbl_proxy_hint = QtWidgets.QLabel()
         lbl_proxy_hint.setText(
-            '<b>Mỗi dòng 1 proxy:</b> IP:PORT:USER:PASS hoặc IP:PORT.<br>'
-            '<b>Nếu sai/thiếu thì profile sẽ mở theo proxy local của máy.</b>'
+            'Mỗi dòng sẽ nhập 1 ID Profile tương ứng với 1 cảnh khi tạo video'
         )
         lbl_proxy_hint.setObjectName("proxyHintLabel")
         lbl_proxy_hint.setWordWrap(True)
@@ -118,11 +117,11 @@ class Ui_Widget(object):
         self.te_proxy_input = QtWidgets.QTextEdit()
         self.te_proxy_input.setObjectName("proxyTextEdit")
         self.te_proxy_input.setPlaceholderText(
-            "1.2.3.4:8080:user:pass\n5.6.7.8:3128\n..."
+            "e7964a2b-6c1f-453e-be60-058c058305c3\n6a0113a1-2ba7-4d2b-8c36-3c91f2037140\nf926be54-8a75-4f0d-96ab-13a01b92c741"
         )
         self.te_proxy_input.setFixedHeight(_s(190, sc))
         panel_lay.addWidget(self.te_proxy_input)
-        self.btn_proxy_close = QtWidgets.QPushButton("✔  Đóng bảng proxy")
+        self.btn_proxy_close = QtWidgets.QPushButton("✔  Đóng bảng danh sách Profile")
         self.btn_proxy_close.setObjectName("proxyCloseBtn")
         self.btn_proxy_close.setFixedHeight(_s(34, sc))
         self.btn_proxy_close.setCursor(QtCore.Qt.PointingHandCursor)
@@ -131,7 +130,7 @@ class Ui_Widget(object):
         lv.addWidget(self.proxy_expand_panel)
 
         # Kích thước luồng (GPM window size)
-        lv.addWidget(self._lbl("Kích thước khi mở luồng", "grpLabel"))
+        lv.addWidget(self._lbl("Kích thước khi mở Profile", "grpLabel"))
         self.cb_win_size = self._combo([f"{s}px:{s}px" for s in range(400, 1600, 100)])
         lv.addWidget(self.cb_win_size)
 
@@ -395,8 +394,7 @@ class Ui_Widget(object):
         prompt.setObjectName("promptBox")
         prompt.setFixedHeight(_s(54, sc))
         prompt.setPlainText(
-            "anime style, vibrant colors, clean outlines, soft cel shading, "
-            "detailed eyes, studio-quality anime frame, high-clarity character design..."
+            "Đây là nơi hiển thị PROMPT của cảnh này (Ví dụ: anime style, vivid colors, clean lines, soft cel shading, detailed eyes, high-quality character art..."
         )
 
         audio_lb = QtWidgets.QLabel("AUDIO / TTS")

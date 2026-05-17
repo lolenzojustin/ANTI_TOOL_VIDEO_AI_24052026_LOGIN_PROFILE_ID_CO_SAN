@@ -3,6 +3,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
 
+import re
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import os
 import time
@@ -18,11 +19,11 @@ class MultiThread(QThread):
     # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, kết quả)
     record = pyqtSignal(int, str, str)
 
-    def __init__(self, index, api_url_gpm, proxy="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0"):
+    def __init__(self, index, api_url_gpm, profile_id="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0"):
         super().__init__()
         self.index = index
         self.api_url_gpm = api_url_gpm  # URL GPM lấy từ giao diện
-        self.proxy = proxy               # Proxy cho luồng này (rỗng = dùng proxy local)
+        self.profile_id = profile_id    # ID Profile cho luồng này
         self.prompt_text = prompt_text
         self.win_size = win_size
         self.win_pos = win_pos
@@ -31,24 +32,17 @@ class MultiThread(QThread):
 
     def run(self):
         gpm = Gpm()
-        profile_id = None
+        profile_id = self.profile_id
         
         status = None
         response_data = "-"
         try:
-            # 1. Tạo Profile GPM mới
+            # 1. Kiểm tra ID Profile GPM
             if not self.is_running:
                 status = "Đã dừng"
                 return
-            self.record.emit(self.index, "Đang tạo profile GPM", "-")
-            if self.proxy:
-                # Có proxy → dùng create_profile với proxy (format IP:PORT:USER:PASS hoặc IP:PORT)
-                profile_id = gpm.create_profile(apiurl_Gpm=self.api_url_gpm, proxy=self.proxy, win_size=self.win_size)
-                print(f"[Cảnh {self.index}] 🌐 Dùng proxy: {self.proxy}")
-            else:
-                # Không có proxy hoặc proxy sai định dạng → mở bằng proxy local
-                profile_id = gpm.create_profile_2(apiurl_Gpm=self.api_url_gpm, win_size=self.win_size)
-                print(f"[Cảnh {self.index}] 🏠 Dùng proxy local")
+            if not profile_id:
+                raise RuntimeError("Chưa có ID Profile cho cảnh này.")
             
             # 2. Mở Profile GPM
             if not self.is_running:
@@ -67,7 +61,17 @@ class MultiThread(QThread):
                 return
             self.record.emit(self.index, "Đang chạy Playwright", "-")
             with sync_playwright() as p:
-                browser = p.chromium.connect_over_cdp(f"http://{remote_addr}")
+                browser = None
+                for attempt in range(5):
+                    try:
+                        browser = p.chromium.connect_over_cdp(f"http://{remote_addr}")
+                        break
+                    except Exception as e:
+                        print(f"[Cảnh {self.index}] Lỗi kết nối CDP (lần {attempt+1}), thử lại sau 2s...")
+                        time.sleep(2)
+                if not browser:
+                    raise RuntimeError("Không thể kết nối Playwright với trình duyệt.")
+                
                 context = browser.contexts[0]
                 # Lấy tab mặc định hoặc tạo tab mới
                 page = context.pages[0] if context.pages else context.new_page()
@@ -79,8 +83,11 @@ class MultiThread(QThread):
                 except Exception:
                     pass
                 
-                # Mở google và nhập "test cảnh"
-                page.goto("https://www.google.com")
+                # Mở ChatGPT và nhập prompt
+                try:
+                    page.goto("https://chatgpt.com/", timeout=60000, wait_until="domcontentloaded")
+                except PlaywrightTimeoutError:
+                    print(f"[Cảnh {self.index}] goto timeout, tiếp tục...")
                 
                 # Kiểm tra dừng sau khi goto
                 if not self.is_running:
@@ -88,10 +95,23 @@ class MultiThread(QThread):
                     status = "Đã dừng"
                     return
                 
-                # Chọn thẻ input search của Google
-                search_input = page.locator('textarea[name="q"], input[name="q"]').first
+                # Xử lý popup thông báo cookie nếu có
+                try:
+                    # Tìm nút X (đóng) thông qua các thuộc tính phổ biến của nút đóng popup
+                    close_btn = page.locator('button[aria-label="Close"], button[aria-label="Đóng"], [role="dialog"] button:has(svg)').first
+                    close_btn.wait_for(state="visible", timeout=3000)
+                    close_btn.click()
+                    print(f"[Cảnh {self.index}] Đã đóng popup thông báo.")
+                except PlaywrightTimeoutError:
+                    pass
+                except Exception:
+                    pass
+                
+                # Chọn thẻ input của ChatGPT
+                search_input = page.locator('#prompt-textarea, div[contenteditable="true"]').last
                 search_input.wait_for(state="visible", timeout=15000)
-                search_input.fill(self.prompt_text)
+                search_input.click()
+                page.keyboard.type(self.prompt_text)
                 page.keyboard.press("Enter")
                 # Đợi một lát để trang load kết quả
                 # page.wait_for_timeout(3000) 
@@ -109,17 +129,12 @@ class MultiThread(QThread):
             status = f"Lỗi: {e}"
             response_data = "-"
         finally:
-            # 5. Dọn dẹp: Đóng và xóa profile GPM rác sau khi làm xong
-            cleanup_success = True
+            # 5. Dọn dẹp: Đóng profile GPM sau khi làm xong
             if profile_id:
-                cleanup_success = self._cleanup_profile(gpm, profile_id)
+                self._cleanup_profile(gpm, profile_id)
             
             if status:
-                final_status = status
-                if status == "Hoàn thành" and not cleanup_success:
-                    final_status = "Lỗi: Xóa profile GPM không thành công"
-                    response_data = "-"
-                self.record.emit(self.index, final_status, response_data)
+                self.record.emit(self.index, status, response_data)
 
     def _cleanup_profile(self, gpm, profile_id):
         close_attempts = 3
@@ -137,23 +152,7 @@ class MultiThread(QThread):
                 time.sleep(2)
         if not close_success:
             print(f"[Cảnh {self.index}] ⚠️ close_profile không thành công sau {close_attempts} lần.")
-
-        # Chờ GPM dừng profile và giải phóng tài nguyên trước khi xóa
-        time.sleep(8)
-
-        delete_attempts = 4
-        for attempt in range(1, delete_attempts + 1):
-            try:
-                response = gpm.delete_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id)
-                if isinstance(response, dict) and response.get("success") is False:
-                    raise RuntimeError(f"delete_profile trả về lỗi: {response}")
-                print(f"[Cảnh {self.index}] ✅ Đã delete_profile: {profile_id} (lần {attempt})")
-                return True
-            except Exception as e:
-                print(f"[Cảnh {self.index}] ⚠️ delete_profile thất bại lần {attempt}: {e}")
-                time.sleep(3 * attempt)
-        print(f"[Cảnh {self.index}] ⚠️ Không xóa được profile {profile_id} sau {delete_attempts} lần.")
-        return False
+        return True
 
     def stop(self):
         """Ra hiệu dừng: đặt cả boolean lẫn Event để ngắt sleep ngay lập tức."""
@@ -371,29 +370,32 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập API URL GPM (ví dụ: http://localhost:9495).")
             return
 
-        # Đọc danh sách proxy từ ô nhập thủ công trên giao diện
-        # Giữ nguyên vị trí từng dòng: luồng i lấy proxy dòng i
-        # Chỉ chấp nhận 2 dạng hợp lệ: IP:PORT:USER:PASS hoặc IP:PORT
-        proxy_list = []
+        # Đọc danh sách Profile ID từ ô nhập thủ công trên giao diện
+        # Giữ nguyên vị trí từng dòng: luồng i lấy ID dòng i
+        profile_id_list = []
         proxy_text = self.te_proxy_input.toPlainText().strip()
         if proxy_text:
             for line in proxy_text.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
-                    proxy_list.append("")   # Dòng trống / comment → proxy local
+                    profile_id_list.append("")
                 else:
-                    parts = line.split(":")
-                    if len(parts) == 2 or len(parts) == 4:
-                        if all(parts):
-                            proxy_list.append(line)   # Hợp lệ
-                        else:
-                            proxy_list.append("")
-                            print(f"[Manager] ⚠️ Proxy sai định dạng (bỏ qua): '{line}'")
-                    else:
-                        proxy_list.append("")     # Sai định dạng → proxy local
-                        print(f"[Manager] ⚠️ Proxy sai định dạng (bỏ qua): '{line}'")
-            valid_count = sum(1 for p in proxy_list if p)
-            print(f"[Manager] Đọc được {valid_count}/{len(proxy_list)} proxy hợp lệ. Proxy sai/không điền sẽ sử dụng proxy local.")
+                    profile_id_list.append(line)
+        valid_count = sum(1 for p in profile_id_list if p)
+        print(f"[Manager] Đọc được {valid_count}/{len(profile_id_list)} ID Profile.")
+
+        # Kiểm tra số lượng Profile và định dạng Profile ID
+        invalid_profile_format = any(
+            p and not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", p)
+            for p in profile_id_list
+        )
+        if valid_count < input_soluong or invalid_profile_format:
+            QMessageBox.warning(
+                self,
+                "Kiểm tra lại danh sách Profile",
+                "Vui lòng kiểm tra lại danh sách Profile. Số Profile đang ít hơn số cảnh hoặc định dạng điền trong danh sách Profile không đúng"
+            )
+            return
 
         self.total_threads = input_soluong
         self.completed_threads = 0
@@ -423,8 +425,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
         # Khởi tạo GPM theo đúng số "cảnh" đã chọn
         for i in range(1, input_soluong + 1):
-            # Lấy proxy theo index (dòng i-1 trong file), nếu không có thì dùng proxy local
-            proxy = proxy_list[i - 1] if (i - 1) < len(proxy_list) else ""
+            # Lấy Profile ID theo index (dòng i-1 trong ô nhập)
+            profile_id = profile_id_list[i - 1] if (i - 1) < len(profile_id_list) else ""
             
             # Tính toán vị trí hiển thị luồng
             idx = i - 1
@@ -444,7 +446,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             thread = MultiThread(
                 index=i,
                 api_url_gpm=input_api_url_gpm,
-                proxy=proxy,
+                profile_id=profile_id,
                 prompt_text=current_prompt,
                 win_size=input_win_size,
                 win_pos=win_pos
@@ -570,7 +572,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 f.write(f"{key}={self._encode_env_value(value)}\n")
 
     def _toggle_proxy_panel(self):
-        """Thu gọn hoặc mở rộng bảng nhập proxy."""
+        """Thu gọn hoặc mở rộng bảng nhập Profile."""
         is_expanded = self.proxy_expand_panel.isVisible()
         if is_expanded:
             # Đóng panel → cập nhật text nút thu gọn
@@ -580,9 +582,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 if line.strip() and not line.strip().startswith("#")
             )
             if count:
-                self.btn_proxy_collapsed.setText(f"📋  {count} proxy — Nhấp để chỉnh sửa")
+                self.btn_proxy_collapsed.setText(f"📋  {count} Profile — Nhấp để chỉnh sửa")
             else:
-                self.btn_proxy_collapsed.setText("📋  Nhấp để nhập proxy...")
+                self.btn_proxy_collapsed.setText("📋  Nhấp để nhập danh sách Profile")
         else:
             # Mở panel
             self.proxy_expand_panel.setVisible(True)

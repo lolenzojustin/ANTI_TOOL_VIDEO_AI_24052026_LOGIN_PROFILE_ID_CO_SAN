@@ -245,6 +245,13 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.btn_proxy_close.clicked.connect(self._toggle_proxy_panel)
 
         self.prompt_thread = None
+        
+        # Thêm timer và biến cho hiệu ứng "Đang xử lý"
+        self.loading_timer = QtCore.QTimer(self)
+        self.loading_timer.timeout.connect(self._animate_loading_button)
+        self.dot_count = 0
+        self.is_prompt_running = False
+        self.prompt_scene_count = 0
 
         # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3
         self.veo3_btn_analyze.clicked.connect(self.startThreadVeo3)
@@ -257,19 +264,54 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.veo3_btn_update.clicked.connect(self._update_version)
         self.kol_btn_update.clicked.connect(self._update_version)
 
+    def _animate_loading_button(self):
+        self.dot_count = (self.dot_count + 1) % 4
+        dots = "." * self.dot_count
+        
+        if self.is_prompt_running:
+            text = f"⏱ Đang xử lý {self.prompt_scene_count} cảnh{dots}"
+            self.veo3_btn_running.setText(text)
+            self.kol_btn_running.setText(text)
+        elif self.running_threads > 0:
+            text = f"⏱ Đang xử lý {self.running_threads} cảnh{dots}"
+            self.veo3_btn_running.setText(text)
+            self.kol_btn_running.setText(text)
+
+    def _start_btn_running_animation(self):
+        if not self.loading_timer.isActive():
+            self.dot_count = 0
+            self.loading_timer.start(500)
+            style = (
+                "background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #d97706, stop:1 #b45309);"
+                "border: 1px solid #d97706;"
+                "color: white; font-weight: bold; border-radius: 6px;"
+            )
+            self.veo3_btn_running.setStyleSheet(style)
+            self.kol_btn_running.setStyleSheet(style)
+
+    def _stop_btn_running_animation(self):
+        if not self.is_prompt_running and self.running_threads == 0:
+            self.loading_timer.stop()
+            self.veo3_btn_running.setStyleSheet("")
+            self.kol_btn_running.setStyleSheet("")
+            self.veo3_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+            self.kol_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+
     def _set_veo3_btn_running(self, is_running):
         """Đổi trạng thái nút BẮT ĐẦU TẠO VIDEO theo trạng thái luồng."""
         if is_running:
             self.veo3_btn_analyze.setText("⏹  ĐANG CHẠY TẠO VIDEO...BẤM ĐỂ DỪNG CHẠY")
             self.veo3_btn_analyze.setStyleSheet(
                 "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-                " stop:0 #b91c1c, stop:1 #f97316);"
+                " stop:0 #b91c1c, stop:1 #ef4444);"
                 " border: none; color: white; font-weight: bold;"
             )
+            self._start_btn_running_animation()
         else:
             self.veo3_btn_analyze.setText("🚀  Bắt đầu tạo video từ tất cả cảnh")
             # Xoá style inline → fallback về QSS gốc (#analyzeBtn)
             self.veo3_btn_analyze.setStyleSheet("")
+            self._stop_btn_running_animation()
 
     def _stop_all_veo3_threads(self):
         """Dừng tất cả luồng đang chạy và reset UI ngay lập tức."""
@@ -280,13 +322,13 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         # Reset UI ngay lập tức — không chờ thread kết thúc
         self.running_threads = 0
         self.completed_threads = self.total_threads  # Đánh dấu đã xong để tránh lệch counter
-        self.veo3_btn_running.setText("⏱ Đang xử lý 0 luồng")
         self._set_veo3_btn_running(False)
         QtWidgets.QApplication.processEvents()  # Buộc UI render ngay
 
     def _set_prompt_btn_running(self, is_running):
         """Đổi trạng thái nút Bắt đầu phân tích tạo Prompt."""
         if is_running:
+            self.is_prompt_running = True
             text = "⏳ Đang phân tích tạo prompt..."
             style = (
                 "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
@@ -297,12 +339,15 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             self.veo3_btn_merge.setStyleSheet(style)
             self.kol_btn_merge.setText(text)
             self.kol_btn_merge.setStyleSheet(style)
+            self._start_btn_running_animation()
         else:
+            self.is_prompt_running = False
             text = "🎬 Bắt đầu phân tích tạo Prompt"
             self.veo3_btn_merge.setText(text)
             self.veo3_btn_merge.setStyleSheet("")
             self.kol_btn_merge.setText(text)
             self.kol_btn_merge.setStyleSheet("")
+            self._stop_btn_running_animation()
 
     def analyzePrompts(self):
         try:
@@ -321,7 +366,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
         api_url = "https://thangdepzai.devttt.com/webhook/webhook_get_data_tool"
         print(f"[Manager] Bắt đầu gọi 1 API POST...")
+        self.prompt_scene_count = input_soluong
         self._set_prompt_btn_running(True)
+        self._animate_loading_button()
         QtWidgets.QApplication.processEvents()
 
         # Thu thập 9 thông tin từ UI
@@ -451,11 +498,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.completed_threads = 0
         self.running_threads = input_soluong  # Khởi đầu: tất cả luồng đều chạy
         
-        # Cập nhật nút Đang xử lý: hiển thị số luồng đang chạy
-        self.veo3_btn_running.setText(f"⏱ Đang xử lý {self.running_threads} luồng")
-
         # Đổi nút sang trạng thái đang chạy NGAY lập tức trước khi khởi động luồng
         self._set_veo3_btn_running(True)
+        self._animate_loading_button()
         QtWidgets.QApplication.processEvents()  # Buộc UI render ngay
 
         self.threads = []
@@ -528,13 +573,11 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
             self.completed_threads += 1
             self.running_threads = max(0, self.running_threads - 1)  # Giảm luồng đang chạy
-            # Cập nhật nút hiển thị số luồng đang chạy
-            self.veo3_btn_running.setText(f"⏱ Đang xử lý {self.running_threads} luồng")
+            self._animate_loading_button()
             
             # Nếu tất cả các luồng đã xong (hoàn thành / lỗi / dừng)
             if self.completed_threads == self.total_threads:
                 self.running_threads = 0
-                self.veo3_btn_running.setText("⏱ Đang xử lý 0 luồng")
                 # Trả text nút về trạng thái ban đầu
                 self._set_veo3_btn_running(False)
                 if status != "Đã dừng":  # Chỉ thông báo "Thành công" nếu không phải dừng thủ công

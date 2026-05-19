@@ -172,7 +172,7 @@ class MultiThread(QThread):
         self._stop_event.set()  # Ngắt bất kỳ _stop_event.wait() nào đang bị block
 
 class PromptApiThread(QThread):
-    finished = pyqtSignal()
+    result_ready = pyqtSignal(object)
 
     def __init__(self, payload, post_url):
         super().__init__()
@@ -180,15 +180,21 @@ class PromptApiThread(QThread):
         self.post_url = post_url
 
     def run(self):
+        result_data = None
         # 1. Gọi API POST để gửi thông tin lên N8N
         try:
             print(f"[Phân tích Prompt] Đang gọi API POST: {self.post_url}")
             response_post = requests.post(self.post_url, json=self.payload, timeout=60)
             print(f"[Phân tích Prompt] Đã gửi POST thành công - Status: {response_post.status_code}")
+            if response_post.status_code == 200:
+                try:
+                    result_data = response_post.json()
+                except ValueError:
+                    print("[Phân tích Prompt] Lỗi parse JSON từ API")
         except Exception as e:
             print(f"[Phân tích Prompt] Lỗi gọi API POST N8N: {e}")
                 
-        self.finished.emit()
+        self.result_ready.emit(result_data)
 
 class Manager(QtWidgets.QMainWindow, Ui_Widget):
     def __init__(self):
@@ -313,7 +319,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             QMessageBox.warning(self, "Cảnh báo", "Đang phân tích tạo prompt, vui lòng đợi!")
             return
 
-        api_url = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
+        api_url = "https://thangdepzai.devttt.com/webhook/webhook_get_data_tool"
         print(f"[Manager] Bắt đầu gọi 1 API POST...")
         self._set_prompt_btn_running(True)
         QtWidgets.QApplication.processEvents()
@@ -332,12 +338,60 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         }
 
         self.prompt_thread = PromptApiThread(payload, api_url)
-        self.prompt_thread.finished.connect(self._on_prompt_thread_finished)
+        self.prompt_thread.result_ready.connect(self._on_prompt_thread_finished)
         self.prompt_thread.start()
 
-    def _on_prompt_thread_finished(self):
+    def _on_prompt_thread_finished(self, result_data):
         self._set_prompt_btn_running(False)
-        QMessageBox.information(self, "Thành công", "Đã hoàn thành gửi yêu cầu phân tích tạo Prompt!")
+        
+        # Hàm đệ quy tìm dict chứa các prompt, phòng trường hợp webhook bọc dữ liệu nhiều lớp (ví dụ: [{"Content": "{\\"prompt_1\\":...}"}])
+        def find_prompt_dict(data):
+            if isinstance(data, dict):
+                if "prompt_1" in data:
+                    return data
+                for v in data.values():
+                    res = find_prompt_dict(v)
+                    if res: return res
+            elif isinstance(data, list):
+                for item in data:
+                    res = find_prompt_dict(item)
+                    if res: return res
+            elif isinstance(data, str):
+                import json
+                try:
+                    parsed = json.loads(data)
+                    return find_prompt_dict(parsed)
+                except:
+                    pass
+            return None
+
+        prompt_dict = find_prompt_dict(result_data)
+        
+        if prompt_dict:
+            # Lấy tab đang active để update (0 = Veo3, 1 = KOL)
+            current_tab_index = self.tabWidget.currentIndex()
+            if current_tab_index == 0:
+                target_tab = self.tab_veo3
+            else:
+                target_tab = self.tab_kol
+                
+            # Tìm tất cả QTextEdit có objectName là "promptBox" trong tab hiện tại
+            prompt_boxes = target_tab.findChildren(QtWidgets.QTextEdit, "promptBox")
+            
+            # Update text cho từng prompt box tương ứng với số cảnh
+            updated_count = 0
+            for i, p_box in enumerate(prompt_boxes):
+                prompt_key = f"prompt_{i+1}"
+                if prompt_key in prompt_dict:
+                    p_box.setPlainText(prompt_dict[prompt_key])
+                    updated_count += 1
+            
+            if updated_count > 0:
+                QMessageBox.information(self, "Thành công", f"Đã cập nhật {updated_count} Prompt thành công lên giao diện!")
+            else:
+                QMessageBox.warning(self, "Lỗi", "Tìm thấy cấu trúc Prompt nhưng không khớp với các cảnh trên giao diện!")
+        else:
+            QMessageBox.warning(self, "Lỗi", "Không nhận được dữ liệu Prompt hợp lệ từ API (không tìm thấy prompt_1)!")
 
     def startThreadVeo3(self):
         # Nếu đang có luồng chạy → bấm nút = dừng tất cả

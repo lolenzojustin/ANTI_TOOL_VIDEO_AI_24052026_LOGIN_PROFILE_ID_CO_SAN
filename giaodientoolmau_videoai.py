@@ -90,10 +90,7 @@ class MultiThread(QThread):
                     print(f"[Cảnh {self.index}] goto timeout, tiếp tục...")
                 
                 # Kiểm tra dừng sau khi goto
-                if not self.is_running:
-                    browser.close()
-                    status = "Đã dừng"
-                    return
+                self._check_stop()
                 
                 # Bước 2: Đợi load xong trang thì Bấm Dự án mới
                 try:
@@ -105,10 +102,7 @@ class MultiThread(QThread):
                     print(f"[Cảnh {self.index}] Lỗi khi bấm Dự án mới: {e}")
                 
                 # Kiểm tra dừng
-                if not self.is_running:
-                    browser.close()
-                    status = "Đã dừng"
-                    return
+                self._check_stop()
                 
                 # Xử lý popup thông báo cookie nếu có (giữ nguyên cấu trúc xử lý popup chung)
                 try:
@@ -121,20 +115,133 @@ class MultiThread(QThread):
                 except Exception:
                     pass
                 
-                # Bước 3: Sau khi bấm Dự án mới load xong thì gõ vào prompt của dự án đó
-                search_input = page.locator('textarea:visible, div[contenteditable="true"]:visible').last
-                search_input.wait_for(state="visible", timeout=15000)
-                search_input.click()
-                page.keyboard.type(self.prompt_text)
+                # Bước 3: Cấu hình thông số (Video, Khung hình, 9:16, 1x, Veo 3.1-Lite)
+                try:
+                    print(f"[Cảnh {self.index}] Bắt đầu cấu hình thông số tạo video...")
+                    # Mở menu cài đặt - Nút này có text thay đổi tuỳ theo cấu hình hiện tại (vd: "Nano Banana 2 x2" hoặc "Video 1x")
+                    setting_btn = page.locator('button', has_text=re.compile(r'1x|x2|x3|x4|Video|Hình ảnh|Veo|Imagen|Nano', re.IGNORECASE)).last
+                    setting_btn.click(timeout=10000)
+                    if self._stop_event.wait(1): raise InterruptedError("Đã dừng")
+                    
+                    try:
+                        page.locator('button:has-text("Video")').first.click(timeout=2000)
+                    except: pass
+                    try:
+                        page.locator('button:has-text("Khung hình")').last.click(timeout=2000)
+                    except: pass
+                    try:
+                        page.locator('button:has-text("9:16")').last.click(timeout=2000)
+                    except: pass
+                    try:
+                        page.locator('button:has-text("1x")').first.click(timeout=2000)
+                    except: pass
+                    try:
+                        try:
+                            page.locator('text="Veo 3.1 - Lite"').last.click(timeout=2000)
+                        except:
+                            model_btn = page.locator('button:has-text("Veo"), button:has-text("Imagen")').last
+                            model_btn.click(timeout=2000)
+                            if self._stop_event.wait(0.5): raise InterruptedError("Đã dừng")
+                            page.locator('text="Veo 3.1 - Lite"').last.click(timeout=2000)
+                    except: pass
+                    
+                    print(f"[Cảnh {self.index}] Đã cấu hình xong thông số.")
+                except Exception as e:
+                    if isinstance(e, InterruptedError): raise
+                    print(f"[Cảnh {self.index}] Lỗi cấu hình thông số: {e}")
+                finally:
+                    # Luôn luôn đảm bảo thoát khỏi menu cài đặt để không che khuất ô nhập prompt
+                    page.keyboard.press("Escape")
+                    if self._stop_event.wait(1): raise InterruptedError("Đã dừng")
+                    
+                self._check_stop()
                 
-                # Bước 4: Sau khi gõ prompt xong thì đợi 10 giây là xong 1 luồng chứ ko bấm nút enter
-                time.sleep(10)
+                # Bước 4: Sau khi thiết lập xong thì gõ vào prompt của dự án đó
+                try:
+                    search_input = page.get_by_placeholder(re.compile(r"tạo gì|create", re.IGNORECASE)).first
+                    search_input.wait_for(state="visible", timeout=5000)
+                except:
+                    search_input = page.locator('textarea:visible, div[contenteditable="true"]:visible').last
+                
+                search_input.wait_for(state="visible", timeout=15000)
+                search_input.click(force=True)  # force=True để tránh bị chặn bởi các element khác
+                
+                # Điền prompt siêu tốc (thay vì type từng chữ)
+                search_input.fill(self.prompt_text)
+                
+                # Bước 4.1: Sau khi gõ prompt xong thì bấm nút gửi để tạo video
+                if self._stop_event.wait(1): raise InterruptedError("Đã dừng")
+                
+                # Với ô nhập liệu nhiều dòng (textarea), thường phải dùng Control+Enter để gửi thay vì Enter
+                search_input.press("Control+Enter")
+                print(f"[Cảnh {self.index}] Đã bấm gửi (Ctrl+Enter), đang chờ AI tạo video...")
+                
+                # Bước 5: Đợi quá trình tạo video hoàn tất (dù thành công hay lỗi)
+                try:
+                    print(f"[Cảnh {self.index}] Bắt đầu theo dõi quá trình tạo (chờ tối đa 5 phút)...")
+                    timeout = 300  # 300 giây
+                    elapsed = 0
+                    has_started_generating = False
+                    
+                    while elapsed < timeout:
+                        self._check_stop()
+                        
+                        if elapsed == 4 and not has_started_generating:
+                            print(f"[Cảnh {self.index}] Vẫn chưa thấy bắt đầu tạo, thử click trực tiếp nút Gửi dự phòng...")
+                            try:
+                                # Thường nút Mũi tên gửi là nút button nằm cuối cùng trên giao diện
+                                page.locator('button').last.click(timeout=1500)
+                            except:
+                                pass
+
+                        # 1. Kiểm tra xem có bảng báo lỗi không (Không thành công / Rất tiếc)
+                        error_locator = page.locator('text="Không thành công", text="đã xảy ra lỗi", text="Rất tiếc"').first
+                        if error_locator.is_visible():
+                            print(f"[Cảnh {self.index}] Quá trình tạo kết thúc sớm (Hệ thống báo lỗi).")
+                            break
+                            
+                        # 2. Kiểm tra dấu hiệu đang tạo (thường có chữ 1%, 5%... hoặc progressbar)
+                        progress_locator = page.locator('text=/^\\d{1,3}%$/').first
+                        progressbar_locator = page.get_by_role("progressbar").first
+                        
+                        is_generating = progress_locator.is_visible() or progressbar_locator.is_visible()
+                        
+                        if is_generating:
+                            if not has_started_generating:
+                                print(f"[Cảnh {self.index}] Hệ thống đang trong quá trình render video...")
+                            has_started_generating = True
+                        else:
+                            # Nếu không thấy dấu hiệu đang tạo nữa
+                            if has_started_generating:
+                                # Trước đó đang tạo mà giờ hết -> Đã hoàn thành!
+                                print(f"[Cảnh {self.index}] Đã tạo xong video (tiến trình render đã biến mất).")
+                                break
+                            else:
+                                # Nếu chờ hơn 60s mà vẫn chưa thấy bắt đầu tạo -> thoát để tránh treo luồng
+                                if elapsed > 60:
+                                    print(f"[Cảnh {self.index}] Cảnh báo: Không thấy tiến trình tạo sau 60s.")
+                                    break
+                                    
+                        if self._stop_event.wait(2): raise InterruptedError("Đã dừng")
+                        elapsed += 2
+                        
+                except Exception as e:
+                    if isinstance(e, InterruptedError): raise
+                    print(f"[Cảnh {self.index}] Lỗi trong vòng lặp chờ kết quả: {e}")
+                
+                # Bước 6: Sau khi video tạo xong thì đợi thêm 55 giây rồi mới kết thúc quy trình
+                print(f"[Cảnh {self.index}] Đang đợi thêm 55 giây sau khi tạo xong...")
+                if self._stop_event.wait(55): raise InterruptedError("Đã dừng")
                 
                 # Sau khi xong, đánh dấu hoàn thành và đóng browser
                 status = "Hoàn thành"
-                print(f"[Cảnh {self.index}] ✅ Đã gõ prompt xong và đợi 10s, chuẩn bị đóng browser")
+                print(f"[Cảnh {self.index}] ✅ Đã gõ prompt xong và đợi 55s, chuẩn bị đóng browser")
                 browser.close()
                 
+        except InterruptedError:
+            print(f"[Cảnh {self.index}] Luồng đã bị ngắt bởi người dùng.")
+            status = "Đã dừng"
+            response_data = "-"
         except Exception as e:
             import traceback
             print(f"[Cảnh {self.index}] EXCEPTION:\n{traceback.format_exc()}")
@@ -170,6 +277,11 @@ class MultiThread(QThread):
         """Ra hiệu dừng: đặt cả boolean lẫn Event để ngắt sleep ngay lập tức."""
         self.is_running = False
         self._stop_event.set()  # Ngắt bất kỳ _stop_event.wait() nào đang bị block
+
+    def _check_stop(self):
+        """Kiểm tra và ném lỗi nếu người dùng yêu cầu dừng."""
+        if not self.is_running:
+            raise InterruptedError("Đã dừng")
 
 class PromptApiThread(QThread):
     result_ready = pyqtSignal(object)

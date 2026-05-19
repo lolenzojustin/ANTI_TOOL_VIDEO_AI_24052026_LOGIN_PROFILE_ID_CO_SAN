@@ -131,7 +131,7 @@ class Ui_Widget(object):
 
         # Kích thước luồng (GPM window size)
         lv.addWidget(self._lbl("Kích thước khi mở Profile", "grpLabel"))
-        self.cb_win_size = self._combo([f"{s}px:{s}px" for s in range(400, 1600, 100)])
+        self.cb_win_size = self._combo([f"{s}px:{int(s * 1.3)}px" for s in range(400, 1600, 100)])
         lv.addWidget(self.cb_win_size)
 
         # Đường dẫn folder

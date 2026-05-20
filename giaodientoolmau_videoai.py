@@ -4,7 +4,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
 
 import re
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 import os
 import time
 import threading
@@ -19,7 +19,7 @@ class MultiThread(QThread):
     # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, kết quả)
     record = pyqtSignal(int, str, str)
 
-    def __init__(self, index, api_url_gpm, profile_id="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0"):
+    def __init__(self, index, api_url_gpm, profile_id="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0", flow_settings=None):
         super().__init__()
         self.index = index
         self.api_url_gpm = api_url_gpm  # URL GPM lấy từ giao diện
@@ -27,6 +27,13 @@ class MultiThread(QThread):
         self.prompt_text = prompt_text
         self.win_size = win_size
         self.win_pos = win_pos
+        self.flow_settings = flow_settings or {
+            "content_type": "Video",
+            "frame_type": "Khung hình",
+            "aspect_ratio": "9:16",
+            "gen_count": "1x",
+            "ai_model": "Veo 3.1 - Lite"
+        }
         self.is_running = True
         self._stop_event = threading.Event()  # Event để dừng sleep ngay lập tức
 
@@ -78,10 +85,16 @@ class MultiThread(QThread):
                 
                 # Áp dụng cứng viewport size cho Playwright để hiển thị chính xác
                 try:
-                    w, h = map(int, self.win_size.split(","))
-                    page.set_viewport_size({"width": w, "height": h})
-                except Exception:
-                    pass
+                    import re
+                    # Tự động trích xuất các con số từ chuỗi đầu vào (vd: "800px:1040px", "800, 1040", "800x1040")
+                    numbers = re.findall(r'\d+', str(self.win_size))
+                    if len(numbers) >= 2:
+                        w, h = int(numbers[0]), int(numbers[1])
+                        # Trừ đi khoảng 85px chiều cao cho thanh công cụ (Address bar + Title bar) của trình duyệt Chrome
+                        # Để viewport hiển thị full vừa khít bên trong mà không bị hụt mảng đen
+                        page.set_viewport_size({"width": w, "height": max(500, h - 85)})
+                except Exception as e:
+                    print(f"[Cảnh {self.index}] Lỗi set viewport: {e}")
                 
                 # Bước 1: vào trang https://labs.google/fx/vi/tools/flow
                 try:
@@ -98,6 +111,35 @@ class MultiThread(QThread):
                     new_project_btn.wait_for(state="visible", timeout=15000)
                     new_project_btn.click()
                     print(f"[Cảnh {self.index}] Đã bấm Dự án mới.")
+                    
+                    # Chờ xem có tab mới xuất hiện chứa one.google.com không
+                    one_google_detected = False
+                    for _ in range(6):
+                        for p in context.pages:
+                            try:
+                                if "one.google.com" in p.url:
+                                    one_google_detected = True
+                                    break
+                            except Exception:
+                                pass
+                        if one_google_detected:
+                            break
+                        page.wait_for_timeout(500)
+                    
+                    if one_google_detected:
+                        # Kệ tab one.google.com, chờ 2 giây rồi mới quay lại tab Flow gốc
+                        print(f"[Cảnh {self.index}] Phát hiện tab one.google.com, chờ 2 giây rồi quay về tab Flow gốc...")
+                        page.wait_for_timeout(2000)
+                        page.bring_to_front()
+                        page.wait_for_timeout(1000)
+                        
+                        # Bấm lại Dự án mới trên tab Flow gốc
+                        new_project_btn = page.locator('[data-type="button-overlay"]').first
+                        new_project_btn.wait_for(state="visible", timeout=10000)
+                        new_project_btn.click()
+                        print(f"[Cảnh {self.index}] Đã bấm Dự án mới (lần 2).")
+                        page.wait_for_timeout(1000)
+                        
                 except Exception as e:
                     print(f"[Cảnh {self.index}] Lỗi khi bấm Dự án mới: {e}")
                 
@@ -126,33 +168,55 @@ class MultiThread(QThread):
                 
                 # Bước 3: Cấu hình thông số (Video, Khung hình, 9:16, 1x, Veo 3.1-Lite)
                 try:
-                    print(f"[Cảnh {self.index}] Bắt đầu cấu hình thông số tạo video...")
+                    fs = self.flow_settings
+                    print(f"[Cảnh {self.index}] Bắt đầu cấu hình thông số tạo video: {fs}")
                     # Mở menu cài đặt - Nút này có text thay đổi tuỳ theo cấu hình hiện tại (vd: "Nano Banana 2 x2" hoặc "Video 1x")
                     setting_btn = page.locator('button', has_text=re.compile(r'1x|x2|x3|x4|Video|Hình ảnh|Veo|Imagen|Nano', re.IGNORECASE)).last
                     setting_btn.click(timeout=10000)
                     if self._stop_event.wait(1): raise InterruptedError("Đã dừng")
                     
-                    try:
-                        page.locator('button:has-text("Video")').first.click(timeout=2000)
-                    except: pass
-                    try:
-                        page.locator('button:has-text("Khung hình")').last.click(timeout=2000)
-                    except: pass
-                    try:
-                        page.locator('button:has-text("9:16")').last.click(timeout=2000)
-                    except: pass
-                    try:
-                        page.locator('button:has-text("1x")').first.click(timeout=2000)
-                    except: pass
-                    try:
+                    # Hàm helper click chính xác text
+                    def click_setting(val):
+                        if not val: return
                         try:
-                            page.locator('text="Veo 3.1 - Lite"').last.click(timeout=2000)
-                        except:
+                            # Pattern cho phép khoảng trắng 2 đầu và không phân biệt hoa thường
+                            pattern = re.compile(rf'^\s*{re.escape(str(val).strip())}\s*$', re.IGNORECASE)
+                            # Ưu tiên tìm button hoặc thẻ chứa text này
+                            locator = page.get_by_text(pattern).last
+                            if locator.is_visible(timeout=2000):
+                                locator.click(timeout=2000)
+                            else:
+                                # Fallback nếu get_by_text exact quá khắt khe
+                                page.locator(f'button:has-text("{val}"), [role="button"]:has-text("{val}"), span:has-text("{val}")').last.click(timeout=2000)
+                        except Exception as e:
+                            print(f"[Cảnh {self.index}] ⚠️ Lỗi khi click thiết lập '{val}': {e}")
+
+                    # Chọn loại nội dung (Video / Hình ảnh)
+                    click_setting(fs["content_type"])
+                    
+                    # Chọn loại khung (Khung hình / Thành phần)
+                    click_setting(fs["frame_type"])
+                    
+                    # Chọn tỷ lệ khung hình (9:16 / 16:9)
+                    click_setting(fs["aspect_ratio"])
+                    
+                    # Chọn số lần tạo (1x / x2 / x3 / x4)
+                    click_setting(fs["gen_count"])
+                    
+                    # Chọn mô hình AI (Veo 3.1 - Lite / Veo 3.0 / Veo 2.0)
+                    try:
+                        pattern = re.compile(rf'^\s*{re.escape(str(fs["ai_model"]).strip())}\s*$', re.IGNORECASE)
+                        locator = page.get_by_text(pattern).last
+                        if locator.is_visible(timeout=2000):
+                            locator.click(timeout=2000)
+                        else:
+                            # Nếu không thấy mô hình, thử bấm mở dropdown chọn mô hình trước
                             model_btn = page.locator('button:has-text("Veo"), button:has-text("Imagen")').last
                             model_btn.click(timeout=2000)
                             if self._stop_event.wait(0.5): raise InterruptedError("Đã dừng")
-                            page.locator('text="Veo 3.1 - Lite"').last.click(timeout=2000)
-                    except: pass
+                            page.get_by_text(pattern).last.click(timeout=2000)
+                    except Exception as e:
+                        print(f"[Cảnh {self.index}] ⚠️ Lỗi khi chọn Mô hình AI '{fs['ai_model']}': {e}")
                     
                     print(f"[Cảnh {self.index}] Đã cấu hình xong thông số.")
                 except Exception as e:
@@ -258,91 +322,150 @@ class MultiThread(QThread):
                     filename = f"canh_{self.index}_{safe_prompt}.mp4"
                     save_path = os.path.join(save_dir, filename)
 
-                    # Cách 1: Thử dùng Javascript để đọc dữ liệu video (Fetch Blob -> Base64)
-                    js_success = False
+                    # --- CHỤP ẢNH THUMBNAIL TỪ TRÌNH DUYỆT BẰNG PLAYWRIGHT ---
+                    thumbnail_path = ""
                     try:
-                        has_video = page.evaluate("!!document.querySelector('video')")
-                        if has_video:
-                            print(f"[Cảnh {self.index}] Tìm thấy thẻ video, đang trích xuất dữ liệu trực tiếp...")
-                            # Tăng timeout cho đoạn JS fetch (video có thể lớn)
-                            base64_data = page.evaluate("""
-                                async () => {
-                                    let v = document.querySelector('video');
-                                    let url = v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
-                                    if (!url) throw new Error("Không tìm thấy URL trong thẻ video");
-                                    
-                                    // Fetch dữ liệu từ blob hoặc url
-                                    let response = await fetch(url);
-                                    let blob = await response.blob();
-                                    
-                                    // Chuyển blob thành chuỗi base64
-                                    return new Promise((resolve, reject) => {
-                                        let reader = new FileReader();
-                                        reader.onloadend = () => resolve(reader.result);
-                                        reader.onerror = reject;
-                                        reader.readAsDataURL(blob);
-                                    });
+                        thumbnail_filename = f"canh_{self.index}_{safe_prompt}_thumb.png"
+                        t_path = os.path.join(save_dir, thumbnail_filename)
+                        
+                        # Chờ video hiển thị sau khi render xong (thêm chút thời gian cho chắc chắn)
+                        page.wait_for_timeout(3000)
+                        
+                        # Dùng Javascript để tìm tọa độ chính xác của vùng chứa video trên màn hình
+                        # (Cách này tránh lỗi is_visible() khắt khe của Playwright khiến nó chụp cả màn hình)
+                        box = page.evaluate("""() => {
+                            let videos = document.querySelectorAll('video');
+                            for (let v of videos) {
+                                // Nếu thẻ video bị ẩn (width/height = 0), tìm dần lên thẻ cha chứa nó
+                                let el = v;
+                                while (el && el !== document.body) {
+                                    let rect = el.getBoundingClientRect();
+                                    // Kiểm tra xem thẻ này có kích thước hiển thị thật không (lớn hơn 100x100)
+                                    if (rect.width > 100 && rect.height > 100) {
+                                        // Cuộn nó vào giữa màn hình để chụp không bị lỗi
+                                        el.scrollIntoView({block: 'center', inline: 'center'});
+                                        // Lấy lại tọa độ sau khi cuộn
+                                        let finalRect = el.getBoundingClientRect();
+                                        return {x: finalRect.x, y: finalRect.y, width: finalRect.width, height: finalRect.height};
+                                    }
+                                    el = el.parentElement;
                                 }
-                            """)
+                            }
+                            return null;
+                        }""")
+                        
+                        # Chờ 1 giây cho thao tác cuộn (nếu có) ổn định
+                        page.wait_for_timeout(1000)
+                        
+                        if box:
+                            page.screenshot(path=t_path, clip=box)
+                            thumbnail_path = t_path
+                            print(f"[Cảnh {self.index}] ✅ Chụp ảnh thumbnail video thành công (tọa độ): {thumbnail_path}")
+                        else:
+                            # Nếu JS không tìm thấy, thử tìm thẻ hiển thị cuối cùng
+                            fallback_el = page.locator('[data-type="video-result"], [role="application"], video').last
+                            if fallback_el.is_visible(timeout=2000):
+                                fallback_el.screenshot(path=t_path)
+                                thumbnail_path = t_path
+                                print(f"[Cảnh {self.index}] ✅ Chụp ảnh thumbnail dự phòng thành công: {thumbnail_path}")
+                            else:
+                                print(f"[Cảnh {self.index}] ⚠️ Không tìm thấy khung video để chụp thumbnail.")
+                    except Exception as thumb_err:
+                        print(f"[Cảnh {self.index}] ⚠️ Lỗi chụp ảnh thumbnail: {thumb_err}")
+
+                    # --- TẢI VIDEO VỀ MÁY BẰNG JAVASCRIPT FETCH ---
+                    try:
+                        print(f"[Cảnh {self.index}] Đang trích xuất dữ liệu video trực tiếp qua Javascript...")
+                        # Dùng JS lấy src của video và fetch blob -> base64
+                        # (Cách này vượt qua việc phải nhấp nút Tải xuống trên UI dễ bị lỗi)
+                        base64_data = page.evaluate("""
+                            async () => {
+                                // Lấy tất cả thẻ video
+                                let videos = document.querySelectorAll('video');
+                                let url = null;
+                                for (let v of videos) {
+                                    let tempUrl = v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
+                                    if (tempUrl) {
+                                        url = tempUrl;
+                                        // Ưu tiên blob url
+                                        if (url.startsWith('blob:')) break;
+                                    }
+                                }
+                                
+                                if (!url) {
+                                    // Thử tìm trong shadow dom hoặc thẻ chứa đặc biệt
+                                    let resultNode = document.querySelector('[data-type="video-result"]');
+                                    if (resultNode) {
+                                        let v = resultNode.querySelector('video');
+                                        if (v) {
+                                            url = v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
+                                        }
+                                    }
+                                }
+                                
+                                if (!url) throw new Error("Không tìm thấy URL video nào hợp lệ trên trang");
+                                
+                                // Fetch dữ liệu từ url (hoạt động tốt với blob:https://...)
+                                let response = await fetch(url);
+                                let blob = await response.blob();
+                                
+                                // Đọc blob thành base64 để truyền về Python
+                                return new Promise((resolve, reject) => {
+                                    let reader = new FileReader();
+                                    reader.onloadend = () => resolve(reader.result);
+                                    reader.onerror = reject;
+                                    reader.readAsDataURL(blob);
+                                });
+                            }
+                        """)
+                        
+                        if base64_data and "," in base64_data:
+                            import base64
+                            header, encoded = base64_data.split(",", 1)
+                            with open(save_path, "wb") as f:
+                                f.write(base64.b64decode(encoded))
+                            print(f"[Cảnh {self.index}] ✅ Đã tải video thành công (qua JS fetch): {save_path}")
                             
-                            if base64_data and "," in base64_data:
-                                import base64
-                                header, encoded = base64_data.split(",", 1)
-                                with open(save_path, "wb") as f:
-                                    f.write(base64.b64decode(encoded))
-                                print(f"[Cảnh {self.index}] ✅ Đã lưu video thành công (qua JS fetch): {save_path}")
-                                js_success = True
+                            emit_data = f"{save_path}|{thumbnail_path}" if thumbnail_path else save_path
+                            self.record.emit(self.index, "Tải video thành công", emit_data)
+                        else:
+                            raise Exception("Dữ liệu base64 trả về không hợp lệ")
                     except Exception as js_err:
-                        print(f"[Cảnh {self.index}] JS extraction thất bại ({js_err}), chuyển sang tìm nút UI...")
-
-                    # Cách 2: Nếu JS thất bại, tìm nút tải xuống trên giao diện
-                    if not js_success:
-                        # Hover vào thẻ video để hiện các nút chức năng (nếu có)
-                        try:
-                            page.locator('video, [data-type="video-result"], [role="application"]').last.hover(timeout=3000)
-                            page.wait_for_timeout(1000)
-                        except:
-                            pass
-                        
-                        # Thử click nút 3 chấm (More options) nếu nút Tải bị ẩn bên trong
-                        try:
-                            more_options = page.locator('button[aria-label="Tùy chọn khác"], button[aria-label="More options"], button:has-text("⋮")').last
-                            if more_options.is_visible():
-                                more_options.click(timeout=2000)
-                                page.wait_for_timeout(1000)
-                        except:
-                            pass
-
-                        # Các selector phổ biến của nút Tải xuống
-                        locators = [
-                            'button[aria-label*="ownload"]',
-                            'button[aria-label*="ải xuống"]',
-                            '[role="button"][aria-label*="ownload"]',
-                            '[role="button"][aria-label*="ải xuống"]',
-                            'button[title*="ownload"]',
-                            'button[title*="ải xuống"]',
-                            'a[download]',
-                            'button:has-text("Tải xuống")',
-                            'button:has-text("Lưu")',
-                            'button:has-text("Save")',
-                            '[data-action="download"]'
-                        ]
-                        download_btn = page.locator(", ".join(locators)).first
-                        
-                        print(f"[Cảnh {self.index}] Đang chờ nhấp vào nút tải trên giao diện...")
-                        with page.expect_download(timeout=20000) as download_info:
-                            download_btn.click(timeout=10000, force=True)
-                        
-                        download = download_info.value
-                        download.save_as(save_path)
-                        print(f"[Cảnh {self.index}] ✅ Đã tải video thành công (qua nút UI): {save_path}")
+                        print(f"[Cảnh {self.index}] ❌ Lỗi khi tải video bằng JS: {js_err}")
 
                 except Exception as e:
-                    print(f"[Cảnh {self.index}] ❌ Lỗi khi tải video: {e}")
+                    print(f"[Cảnh {self.index}] ❌ Lỗi tải video chung: {e}")
 
                 # Bước 7: Đợi thêm 55 giây rồi mới kết thúc quy trình
-                print(f"[Cảnh {self.index}] Đang đợi thêm 55 giây sau khi tải xong...")
-                if self._stop_event.wait(55): raise InterruptedError("Đã dừng")
+                print(f"[Cảnh {self.index}] Đang đợi thêm 55 giây và liên tục cập nhật ảnh thumbnail...")
+                for _ in range(11):  # 11 lần x 5s = 55s
+                    if self._stop_event.wait(5): raise InterruptedError("Đã dừng")
+                    
+                    try:
+                        # Thử chụp lại ảnh thumbnail mới nhất (do đôi khi video load chậm)
+                        box = page.evaluate("""() => {
+                            let videos = document.querySelectorAll('video');
+                            for (let v of videos) {
+                                let el = v;
+                                while (el && el !== document.body) {
+                                    let rect = el.getBoundingClientRect();
+                                    if (rect.width > 100 && rect.height > 100) {
+                                        return {x: rect.x, y: rect.y, width: rect.width, height: rect.height};
+                                    }
+                                    el = el.parentElement;
+                                }
+                            }
+                            return null;
+                        }""")
+                        
+                        if box and 'thumbnail_path' in locals() and thumbnail_path:
+                            page.screenshot(path=thumbnail_path, clip=box)
+                            # Bắn tín hiệu để UI load lại ảnh mới (gửi đè đường dẫn cũ)
+                            if 'save_path' in locals() and save_path:
+                                emit_data = f"{save_path}|{thumbnail_path}"
+                                self.record.emit(self.index, "Tải video thành công", emit_data)
+                    except Exception:
+                        pass
                 
                 # Sau khi xong, đánh dấu hoàn thành và đóng browser
                 status = "Hoàn thành"
@@ -353,11 +476,26 @@ class MultiThread(QThread):
             print(f"[Cảnh {self.index}] Luồng đã bị ngắt bởi người dùng.")
             status = "Đã dừng"
             response_data = "-"
+        except PlaywrightError as e:
+            if "TargetClosedError" in str(e.__class__) or "has been closed" in str(e):
+                print(f"[Cảnh {self.index}] Trình duyệt đã bị đóng (hoặc do người dùng dừng).")
+                status = "Đã dừng"
+                response_data = "-"
+            else:
+                import traceback
+                print(f"[Cảnh {self.index}] Lỗi Playwright:\n{traceback.format_exc()}")
+                status = f"Lỗi: {e}"
+                response_data = "-"
         except Exception as e:
-            import traceback
-            print(f"[Cảnh {self.index}] EXCEPTION:\n{traceback.format_exc()}")
-            status = f"Lỗi: {e}"
-            response_data = "-"
+            if "TargetClosedError" in str(e.__class__) or "has been closed" in str(e):
+                print(f"[Cảnh {self.index}] Trình duyệt đã bị đóng (hoặc do người dùng dừng).")
+                status = "Đã dừng"
+                response_data = "-"
+            else:
+                import traceback
+                print(f"[Cảnh {self.index}] EXCEPTION:\n{traceback.format_exc()}")
+                status = f"Lỗi: {e}"
+                response_data = "-"
         finally:
             # 5. Dọn dẹp: Đóng profile GPM sau khi làm xong
             if profile_id:
@@ -373,6 +511,11 @@ class MultiThread(QThread):
             try:
                 response = gpm.close_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id)
                 if isinstance(response, dict) and response.get("success") is False:
+                    # GPM trả về False + message OK thường là profile đã đóng
+                    if response.get("message") in ["OK", "Profile is not running", ""]:
+                        print(f"[Cảnh {self.index}] ✅ Profile {profile_id} đã được đóng trước đó.")
+                        close_success = True
+                        break
                     raise RuntimeError(f"close_profile trả về lỗi: {response}")
                 print(f"[Cảnh {self.index}] ✅ Đã close_profile: {profile_id} (lần {attempt})")
                 close_success = True
@@ -388,6 +531,13 @@ class MultiThread(QThread):
         """Ra hiệu dừng: đặt cả boolean lẫn Event để ngắt sleep ngay lập tức."""
         self.is_running = False
         self._stop_event.set()  # Ngắt bất kỳ _stop_event.wait() nào đang bị block
+        
+        # Chủ động gọi close_profile để ngắt các hàm block của Playwright (vd: wait_for)
+        try:
+            gpm = Gpm()
+            gpm.close_profile(apiurl_Gpm=self.api_url_gpm, id_profile=self.profile_id)
+        except:
+            pass
 
     def _check_stop(self):
         """Kiểm tra và ném lỗi nếu người dùng yêu cầu dừng."""
@@ -451,10 +601,16 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "KOL_LANG": self.kol_cb_lang,
             "KOL_DESC": self.kol_le_desc,
             "KOL_PROMPT": self.kol_le_prompt,
+            "FLOW_CONTENT_TYPE": self.cb_flow_content_type,
+            "FLOW_FRAME_TYPE": self.cb_flow_frame_type,
+            "FLOW_ASPECT_RATIO": self.cb_flow_aspect_ratio,
+            "FLOW_GEN_COUNT": self.cb_flow_gen_count,
+            "FLOW_AI_MODEL": self.cb_flow_ai_model,
         }
 
         self._load_config()
         self.scene_prompt_boxes = self.tab_veo3.findChildren(QtWidgets.QTextEdit, "promptBox")
+        self.scene_preview_containers = self.tab_veo3.findChildren(QtWidgets.QStackedWidget, "previewContainer")
         self._connect_config_signals()
 
         self.threads = []
@@ -761,13 +917,23 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 if text:
                     current_prompt = text
                     
+            # Lấy thông số cấu hình Veo3 Flow từ giao diện
+            flow_settings = {
+                "content_type": self.cb_flow_content_type.currentText(),
+                "frame_type": self.cb_flow_frame_type.currentText(),
+                "aspect_ratio": self.cb_flow_aspect_ratio.currentText(),
+                "gen_count": self.cb_flow_gen_count.currentText(),
+                "ai_model": self.cb_flow_ai_model.currentText(),
+            }
+
             thread = MultiThread(
                 index=i,
                 api_url_gpm=input_api_url_gpm,
                 profile_id=profile_id,
                 prompt_text=current_prompt,
                 win_size=input_win_size,
-                win_pos=win_pos
+                win_pos=win_pos,
+                flow_settings=flow_settings
             )
 
             # Lắng nghe dữ liệu bắn về từ Thread để update log
@@ -787,6 +953,96 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         # In log ra màn hình console để theo dõi
         print(f"[Cảnh {index}] Trạng thái: {status} | Phản hồi N8N: {response_data}")
         
+        if status == "Tải video thành công":
+            save_path = response_data
+            thumbnail_path = ""
+            if "|" in response_data:
+                save_path, thumbnail_path = response_data.split("|", 1)
+
+            # Tìm tất cả previewContainer trên CẢ HAI tab để đảm bảo luôn gán đúng cảnh
+            # (không phụ thuộc vào tab nào đang active trên giao diện)
+            all_preview_containers = []
+            for tab in [self.tab_veo3, self.tab_kol]:
+                containers = tab.findChildren(QtWidgets.QStackedWidget, "previewContainer")
+                all_preview_containers.extend(containers)
+
+            # Duyệt qua tất cả container để tìm đúng cảnh thứ index
+            # Mỗi tab có 10 cảnh, cảnh index 1-10 nằm ở cả 2 tab
+            # Gán thumbnail cho TẤT CẢ container khớp với index
+            matched = False
+            for container in all_preview_containers:
+                # Kiểm tra widget(0) là QLabel có text "SCENE {index}" hoặc đã được gán thumbnail trước
+                preview_widget = container.widget(0)
+                if not preview_widget or not isinstance(preview_widget, QtWidgets.QLabel):
+                    continue
+                
+                # Xác định container thuộc cảnh nào bằng text gốc hoặc thuộc tính lưu trữ
+                label_text = preview_widget.text().strip()
+                
+                if hasattr(preview_widget, '_scene_index'):
+                    is_match = (preview_widget._scene_index == index)
+                else:
+                    is_match = (label_text == f"SCENE {index}")
+                
+                if not is_match:
+                    continue
+                
+                matched = True
+                # Đánh dấu scene index cho lần sau
+                preview_widget._scene_index = index
+                
+                # 1. Hiển thị ảnh Thumbnail trên preview QLabel (widget index 0)
+                if thumbnail_path and os.path.exists(thumbnail_path):
+                    pixmap = QtGui.QPixmap(thumbnail_path)
+                    if not pixmap.isNull():
+                        # Thay đổi: Dùng KeepAspectRatio để hiển thị toàn bộ khung hình, không bị cắt xén
+                        scaled_pixmap = pixmap.scaled(
+                            preview_widget.size(),
+                            QtCore.Qt.KeepAspectRatio,
+                            QtCore.Qt.SmoothTransformation
+                        )
+                        preview_widget.setPixmap(scaled_pixmap)
+                        preview_widget.setText("")  # Xoá chữ "SCENE X" để hiển thị ảnh trọn vẹn
+                        # Tắt setScaledContents để ảnh không bị bóp méo, tự động căn giữa theo pixmap đã scale
+                        preview_widget.setScaledContents(False)
+                        # Đổi nền thành màu đen để lấp đầy 2 bên mảng trống nếu ảnh là 9:16
+                        preview_widget.setStyleSheet("background-color: #000000; border-radius: 6px; border: 1px solid #334155;")
+                else:
+                    # Nếu không có thumbnail thì đổi text để người dùng biết là đã tải xong và có thể click
+                    preview_widget.setText("🎥 VIDEO ĐÃ TẢI XONG\n\n(Click để xem)")
+                    preview_widget.setStyleSheet("background: rgba(16, 185, 129, 0.2); color: #34d399; font-weight: bold; border-radius: 6px;")
+
+                # 2. Gán sự kiện click chuột mở video trực tiếp trong máy
+                def make_clickable(widget, video_path):
+                    widget.setCursor(QtCore.Qt.PointingHandCursor)
+                    widget.setToolTip(f"Click để mở video: {os.path.basename(video_path)}")
+                    def click_event(event, vp=video_path):
+                        if os.path.exists(vp):
+                            try:
+                                os.startfile(vp)
+                            except AttributeError:
+                                import subprocess
+                                import sys
+                                if sys.platform == "darwin":
+                                    subprocess.call(["open", vp])
+                                else:
+                                    subprocess.call(["xdg-open", vp])
+                    widget.mousePressEvent = click_event
+
+                make_clickable(preview_widget, save_path)
+                
+                video_widget = container.widget(1)
+                if video_widget:
+                    make_clickable(video_widget, save_path)
+
+                # Giữ màn hình hiển thị Thumbnail (Index 0)
+                container.setCurrentIndex(0)
+            
+            if not matched:
+                print(f"[Cảnh {index}] ⚠️ Không tìm thấy previewContainer phù hợp cho cảnh {index}")
+
+            return
+
         # Nếu luồng hoàn tất, bị lỗi, hoặc bị dừng thì giảm bộ đếm luồng đang chạy
         if status == "Hoàn thành" or status.startswith("Lỗi") or status == "Đã dừng":
             if status == "Hoàn thành" and response_data and response_data != "-":

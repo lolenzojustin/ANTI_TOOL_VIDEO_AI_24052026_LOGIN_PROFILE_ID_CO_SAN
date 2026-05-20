@@ -194,6 +194,36 @@ class Ui_Widget(object):
             lambda idx: self.lb_duration_inline.setText(f"Thời gian: {(idx + 1) * 8} giây")
         )
 
+        lv.addWidget(self._hline())
+
+        # CẤU HÌNH THÔNG SỐ VEO3 FLOW
+        lv.addWidget(self._lbl("CẤU HÌNH VEO3 FLOW", "sectionTitle"))
+        lbl_flow_note = self._lbl("Thông số sẽ được áp dụng khi tạo video trên Flow", "noteLabel")
+        lbl_flow_note.setWordWrap(True)
+        lv.addWidget(lbl_flow_note)
+
+        lv.addWidget(self._lbl("Loại nội dung", "grpLabel"))
+        self.cb_flow_content_type = self._combo(["Video", "Hình ảnh"])
+        lv.addWidget(self.cb_flow_content_type)
+
+        lv.addWidget(self._lbl("Loại khung", "grpLabel"))
+        self.cb_flow_frame_type = self._combo(["Khung hình", "Thành phần"])
+        lv.addWidget(self.cb_flow_frame_type)
+
+        lv.addWidget(self._lbl("Tỷ lệ khung hình", "grpLabel"))
+        self.cb_flow_aspect_ratio = self._combo(["9:16", "16:9"])
+        lv.addWidget(self.cb_flow_aspect_ratio)
+
+        lv.addWidget(self._lbl("Số lần tạo", "grpLabel"))
+        self.cb_flow_gen_count = self._combo(["1x", "x2", "x3", "x4"])
+        lv.addWidget(self.cb_flow_gen_count)
+
+        lv.addWidget(self._lbl("Mô hình AI", "grpLabel"))
+        self.cb_flow_ai_model = self._combo(["Veo 3.1 - Lite", "Veo 3.0", "Veo 2.0"])
+        lv.addWidget(self.cb_flow_ai_model)
+
+        lv.addWidget(self._hline())
+
         lv.addWidget(self._lbl("Giọng nhân vật đồng nhất", "grpLabel"))
         self.te_voice_desc = QtWidgets.QTextEdit()
         self.te_voice_desc.setPlaceholderText("Nhập mô tả giọng nhân vật...")
@@ -376,10 +406,22 @@ class Ui_Widget(object):
         hl.setContentsMargins(_s(10,sc), _s(10,sc), _s(10,sc), _s(10,sc))
         hl.setSpacing(_s(12,sc))
 
+        from PyQt5.QtMultimediaWidgets import QVideoWidget
+
+        preview_container = QtWidgets.QStackedWidget()
+        preview_container.setObjectName("previewContainer")
+        # Chỉnh về đúng tỷ lệ 16:9 (160x90)
+        preview_container.setFixedSize(_s(160, sc), _s(90, sc))
+
         preview = QtWidgets.QLabel(f"SCENE {idx}")
         preview.setObjectName("previewBox")
         preview.setAlignment(QtCore.Qt.AlignCenter)
-        preview.setFixedSize(_s(170, sc), _s(90, sc))
+        
+        video_widget = QVideoWidget()
+        video_widget.setObjectName("videoWidget")
+
+        preview_container.addWidget(preview)
+        preview_container.addWidget(video_widget)
 
         vr = QtWidgets.QVBoxLayout()
         vr.setSpacing(_s(4, sc))
@@ -405,8 +447,22 @@ class Ui_Widget(object):
         vr.addWidget(prompt)
         vr.addWidget(audio_lb)
 
-        hl.addWidget(preview)
+        left_vl = QtWidgets.QVBoxLayout()
+        left_vl.setSpacing(0)
+        left_vl.addWidget(preview_container)
+        
+        click_hint = QtWidgets.QLabel("Click vào khung hình để xem video")
+        click_hint.setAlignment(QtCore.Qt.AlignCenter)
+        click_hint.setStyleSheet(f"color: #fbbf24; font-size: {_s(10, sc)}px; font-style: italic; margin-top: {_s(4, sc)}px;")
+        
+        left_vl.addWidget(click_hint)
+        left_vl.addStretch()
+
+        hl.addLayout(left_vl)
         hl.addLayout(vr, 1)
+        
+        # Save refs
+        setattr(self, f"scene_{idx}_preview", preview_container)
         return card
 
     # ─── KOL TAB ───

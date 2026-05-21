@@ -44,7 +44,7 @@ class Ui_Widget(object):
         sc = self._sc
 
         Widget.setObjectName("Widget")
-        Widget.resize(_s(1800, sc), _s(1245, sc))
+        Widget.resize(_s(2000, sc), _s(1400, sc))
 
         self.centralwidget = QtWidgets.QWidget(Widget)
         Widget.setCentralWidget(self.centralwidget)
@@ -338,6 +338,7 @@ class Ui_Widget(object):
         actions = [
             ("🎬 Bắt đầu phân tích tạo Prompt",  "actionBtnMerge",   f"{prefix}_btn_merge"),
             ("🔁 Chạy lại cảnh nhất định",  "actionBtnRerun",   f"{prefix}_btn_rerun"),
+            ("🎞️ Ghép tất cả cảnh thành 1 video", "actionBtnConcat", f"{prefix}_btn_concat"),
         ]
         for text, obj, attr in actions:
             b = QtWidgets.QPushButton(text)
@@ -519,6 +520,7 @@ class Ui_Widget(object):
         kol_actions = [
             ("🎬 Bắt đầu phân tích tạo Prompt", "actionBtnMerge",   "kol_btn_merge"),
             ("🔁 Chạy lại cảnh nhất định", "actionBtnRerun",   "kol_btn_rerun"),
+            ("🎞️ Ghép tất cả cảnh thành 1 video", "actionBtnConcat", "kol_btn_concat"),
         ]
         for text, obj, attr in kol_actions:
             b = QtWidgets.QPushButton(text)
@@ -911,6 +913,16 @@ class Ui_Widget(object):
             font-weight: bold;
         }}
         #actionBtnRerun:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c2d12, stop:1 #ea580c); }}
+
+        #actionBtnConcat {{
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0f766e, stop:1 #14b8a6);
+            border: 1px solid #0d9488;
+            color: white; font-size: {_s(13,sc)}px;
+            padding: {_s(3,sc)}px {_s(10,sc)}px;
+            border-radius: {_s(6,sc)}px;
+            font-weight: bold;
+        }}
+        #actionBtnConcat:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #115e59, stop:1 #0d9488); }}
 
         #actionBtnAdd {{
             background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #166534, stop:1 #22c55e);

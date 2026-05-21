@@ -569,6 +569,59 @@ class PromptApiThread(QThread):
                 
         self.result_ready.emit(result_data)
 
+class ConcatVideoThread(QThread):
+    """Thread ghép nối tất cả video cảnh thành 1 video duy nhất bằng moviepy."""
+    finished = pyqtSignal(bool, str)  # (thành công, đường dẫn hoặc lỗi)
+
+    def __init__(self, video_files, output_path):
+        super().__init__()
+        self.video_files = video_files
+        self.output_path = output_path
+
+    def run(self):
+        try:
+            from moviepy import VideoFileClip, concatenate_videoclips
+
+            print(f"[Ghép video] Đang load {len(self.video_files)} video cảnh...")
+            clips = []
+            for vf in self.video_files:
+                print(f"  - Đang load: {os.path.basename(vf)}")
+                clip = VideoFileClip(vf)
+                clips.append(clip)
+
+            if not clips:
+                self.finished.emit(False, "Không có video nào để ghép.")
+                return
+
+            print(f"[Ghép video] Đang ghép nối {len(clips)} video...")
+            final_clip = concatenate_videoclips(clips, method="compose")
+
+            print(f"[Ghép video] Đang xuất file: {self.output_path}")
+            final_clip.write_videofile(
+                self.output_path,
+                codec="libx264",
+                audio_codec="aac",
+                logger=None  # Tắt log moviepy để không spam console
+            )
+
+            # Giải phóng bộ nhớ
+            final_clip.close()
+            for c in clips:
+                c.close()
+
+            if os.path.exists(self.output_path):
+                print(f"[Ghép video] ✅ Thành công: {self.output_path}")
+                self.finished.emit(True, self.output_path)
+            else:
+                self.finished.emit(False, "File xuất ra không tồn tại sau khi ghép.")
+        except ImportError:
+            self.finished.emit(False, "Chưa cài thư viện moviepy.\n\nChạy lệnh: pip install moviepy")
+        except Exception as e:
+            import traceback
+            print(f"[Ghép video] ❌ Lỗi: {traceback.format_exc()}")
+            self.finished.emit(False, f"Lỗi ghép video: {e}")
+
+
 class Manager(QtWidgets.QMainWindow, Ui_Widget):
     def __init__(self):
         super().__init__()
@@ -642,6 +695,11 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         # Kết nối nút cập nhật phiên bản cho cả hai tab
         self.veo3_btn_update.clicked.connect(self._update_version)
         self.kol_btn_update.clicked.connect(self._update_version)
+
+        # Kết nối nút ghép video cho cả hai tab
+        self.concat_thread = None
+        self.veo3_btn_concat.clicked.connect(self.concatAllScenes)
+        self.kol_btn_concat.clicked.connect(self.concatAllScenes)
 
     def _animate_loading_button(self):
         self.dot_count = (self.dot_count + 1) % 4
@@ -1161,6 +1219,109 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             # Mở panel
             self.proxy_expand_panel.setVisible(True)
 
+    def concatAllScenes(self):
+        """Ghép nối tất cả video cảnh thành 1 video duy nhất."""
+        # Kiểm tra nếu đang ghép thì không cho bấm lại
+        if self.concat_thread and self.concat_thread.isRunning():
+            QMessageBox.warning(self, "Thông báo", "Đang ghép video, vui lòng chờ!")
+            return
+
+        # Tìm thư mục chứa video đã tạo
+        save_dir = os.path.join(os.getcwd(), "videos_da_tao")
+        if not os.path.exists(save_dir):
+            QMessageBox.warning(self, "Lỗi", "Chưa có thư mục videos_da_tao.\nHãy tạo video từ các cảnh trước!")
+            return
+
+        # Lấy số lượng cảnh hiện tại đang được chọn trên giao diện
+        try:
+            input_soluong = int(self.cb_scene_count.currentText())
+        except ValueError:
+            QMessageBox.warning(self, "Lỗi", "Số lượng cảnh trên giao diện không hợp lệ.")
+            return
+
+        video_files = []
+        missing_scenes = []
+
+        # Chỉ tìm đúng các cảnh từ 1 đến input_soluong
+        for i in range(1, input_soluong + 1):
+            prefix = f"canh_{i}_"
+            scene_files = []
+            for f in os.listdir(save_dir):
+                if f.startswith(prefix) and f.endswith(".mp4") and "_thumb" not in f and f != "video_ghep_tat_ca.mp4":
+                    scene_files.append(os.path.join(save_dir, f))
+            
+            if scene_files:
+                # Nếu có nhiều file cho cùng 1 cảnh, ưu tiên lấy file mới được tạo nhất
+                scene_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                video_files.append(scene_files[0])
+            else:
+                missing_scenes.append(str(i))
+
+        if missing_scenes:
+            QMessageBox.warning(self, "Lỗi", f"Chưa có video cho các cảnh: {', '.join(missing_scenes)}.\nHãy chạy tạo video cho các cảnh này trước rồi mới ghép!")
+            return
+
+        print(f"[Ghép video] Tìm thấy {len(video_files)} video cảnh để ghép:")
+        for vf in video_files:
+            print(f"  - {os.path.basename(vf)}")
+
+        output_path = os.path.join(save_dir, "video_ghep_tat_ca.mp4")
+
+        # Đổi text nút sang trạng thái đang ghép (cả 2 tab)
+        wait_text = "⏳ Đang ghép video vui lòng chờ..."
+        self.veo3_btn_concat.setText(wait_text)
+        self.kol_btn_concat.setText(wait_text)
+        self.veo3_btn_concat.setEnabled(False)
+        self.kol_btn_concat.setEnabled(False)
+
+        # Chạy thread ghép video nền
+        self.concat_thread = ConcatVideoThread(video_files, output_path)
+        self.concat_thread.finished.connect(self._on_concat_finished)
+        self.concat_thread.start()
+
+    def _on_concat_finished(self, success, result):
+        """Callback khi thread ghép video hoàn tất."""
+        # Trả nút về trạng thái ban đầu (cả 2 tab)
+        original_text = "🎞️ Ghép tất cả cảnh thành 1 video"
+        self.veo3_btn_concat.setText(original_text)
+        self.kol_btn_concat.setText(original_text)
+        self.veo3_btn_concat.setEnabled(True)
+        self.kol_btn_concat.setEnabled(True)
+
+        if success:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Thành công")
+            msg.setText("Đã ghép tất cả các cảnh video thành 1 video!")
+            msg.setIcon(QMessageBox.Information)
+            
+            btn_play = msg.addButton("Xem trực tiếp video", QMessageBox.ActionRole)
+            btn_folder = msg.addButton("Mở thư mục chứa video", QMessageBox.ActionRole)
+            msg.addButton("Đóng", QMessageBox.RejectRole)
+            
+            msg.exec_()
+            
+            if msg.clickedButton() == btn_play:
+                try:
+                    os.startfile(result)
+                except AttributeError:
+                    import subprocess, sys
+                    if sys.platform == "darwin":
+                        subprocess.call(["open", result])
+                    else:
+                        subprocess.call(["xdg-open", result])
+            elif msg.clickedButton() == btn_folder:
+                folder_path = os.path.dirname(result)
+                try:
+                    os.startfile(folder_path)
+                except AttributeError:
+                    import subprocess, sys
+                    if sys.platform == "darwin":
+                        subprocess.call(["open", folder_path])
+                    else:
+                        subprocess.call(["xdg-open", folder_path])
+        else:
+            QMessageBox.critical(self, "Lỗi ghép video", result)
+
     def _update_version(self):
         """Cho phép người dùng cập nhật phiên bản tool."""
         from PyQt5 import QtWidgets
@@ -1208,6 +1369,5 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     window = Manager()
-    window.resize(1920, 1245)
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec_())

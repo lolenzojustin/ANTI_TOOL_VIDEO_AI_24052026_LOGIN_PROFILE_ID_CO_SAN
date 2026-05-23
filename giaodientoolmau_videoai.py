@@ -91,8 +91,10 @@ class MultiThread(QThread):
                     if len(numbers) >= 2:
                         w, h = int(numbers[0]), int(numbers[1])
                         # Trừ đi khoảng 85px chiều cao cho thanh công cụ (Address bar + Title bar) của trình duyệt Chrome
-                        # Để viewport hiển thị full vừa khít bên trong mà không bị hụt mảng đen
-                        page.set_viewport_size({"width": w, "height": max(500, h - 85)})
+                        # Viewport khớp đúng kích thước cửa sổ thực tế để hiển thị full
+                        vp_w = w
+                        vp_h = max(300, h - 85)
+                        page.set_viewport_size({"width": vp_w, "height": vp_h})
                 except Exception as e:
                     print(f"[Cảnh {self.index}] Lỗi set viewport: {e}")
                 
@@ -101,6 +103,20 @@ class MultiThread(QThread):
                     page.goto("https://labs.google/fx/vi/tools/flow", timeout=60000, wait_until="domcontentloaded")
                 except PlaywrightTimeoutError:
                     print(f"[Cảnh {self.index}] goto timeout, tiếp tục...")
+                
+                # Tự động zoom trang web để nội dung hiển thị gần full trong viewport nhỏ
+                # Tính zoom dựa trên viewport width: nếu nhỏ hơn 800px thì zoom ra để thấy nhiều hơn
+                try:
+                    numbers = re.findall(r'\d+', str(self.win_size))
+                    if len(numbers) >= 2:
+                        vp_w = int(numbers[0])
+                        if vp_w < 800:
+                            zoom_level = round(vp_w / 800, 2)
+                            zoom_level = max(0.3, min(zoom_level, 1.0))
+                            page.evaluate(f"document.body.style.zoom = '{zoom_level}'")
+                            print(f"[Cảnh {self.index}] Đã zoom trang web xuống {zoom_level} để hiển thị full.")
+                except Exception as e:
+                    print(f"[Cảnh {self.index}] Lỗi khi zoom trang: {e}")
                 
                 # Kiểm tra dừng sau khi goto
                 self._check_stop()
@@ -675,10 +691,11 @@ class RefImageThread(QThread):
                     numbers = re.findall(r'\d+', str(self.win_size))
                     if len(numbers) >= 2:
                         w, h = int(numbers[0]), int(numbers[1])
-                        # Trừ 130px = chiều cao các thanh chrome trong GPM:
-                        # tab bar (~35px) + address bar (~45px) + GPM custom toolbar (~50px)
-                        # Điều này đảm bảo nội dung trang vừa khít trong vùng nhìn thấy
-                        page.set_viewport_size({"width": w, "height": max(500, h - 130)})
+                        # Trừ 85px = chiều cao thanh công cụ trình duyệt (Address bar + Title bar)
+                        # Viewport khớp đúng kích thước cửa sổ thực tế để hiển thị full
+                        vp_w = w
+                        vp_h = max(300, h - 85)
+                        page.set_viewport_size({"width": vp_w, "height": vp_h})
                 except:
                     pass
 
@@ -686,6 +703,19 @@ class RefImageThread(QThread):
                     page.goto("https://labs.google/fx/vi/tools/flow", timeout=60000, wait_until="domcontentloaded")
                 except PlaywrightTimeoutError:
                     pass
+
+                # Tự động zoom trang web để nội dung hiển thị gần full trong viewport nhỏ
+                try:
+                    numbers = re.findall(r'\d+', str(self.win_size))
+                    if len(numbers) >= 2:
+                        vp_w = int(numbers[0])
+                        if vp_w < 800:
+                            zoom_level = round(vp_w / 800, 2)
+                            zoom_level = max(0.3, min(zoom_level, 1.0))
+                            page.evaluate(f"document.body.style.zoom = '{zoom_level}'")
+                            print(f"[Ảnh Tham Chiếu] Đã zoom trang web xuống {zoom_level} để hiển thị full.")
+                except Exception as e:
+                    print(f"[Ảnh Tham Chiếu] Lỗi khi zoom trang: {e}")
 
                 self._check_stop()
 
@@ -885,12 +915,24 @@ class RefImageThread(QThread):
                 print("[Ảnh Tham Chiếu] Bắt đầu tải ảnh...")
                 page.wait_for_timeout(3000)
                 
-                if not os.path.exists(self.save_dir):
-                    os.makedirs(self.save_dir)
+                # Đảm bảo thư mục lưu tồn tại (exist_ok=True để không lỗi nếu đã có)
+                os.makedirs(self.save_dir, exist_ok=True)
                 
-                safe_prompt = re.sub(r'[\\/*?:"<>|]', "", self.prompt_text)[:30].strip() or "ref"
+                # Lọc tên file an toàn: CHỈ giữ chữ cái, số, khoảng trắng, gạch ngang, gạch dưới
+                # Loại bỏ toàn bộ ký tự đặc biệt (', [, ], /, \, :, ?, *, <, >, |, ", dấu ngoặc...)
+                safe_prompt = re.sub(r'[^\w\s-]', '', self.prompt_text, flags=re.ASCII)
+                safe_prompt = re.sub(r'\s+', '_', safe_prompt).strip('_')  # Thay khoảng trắng bằng _
+                safe_prompt = safe_prompt[:30].strip('_') or "ref"
                 filename = f"ref_image_{safe_prompt}_{int(time.time())}.png"
                 image_path = os.path.join(self.save_dir, filename)
+                print(f"[Ảnh Tham Chiếu] Đường dẫn lưu ảnh: {image_path}")
+
+                # Tạm tắt CSS zoom trước khi tìm ảnh và chụp screenshot
+                # (CSS zoom làm lệch tọa độ getBoundingClientRect)
+                try:
+                    page.evaluate("document.body.style.zoom = '1.0'")
+                except:
+                    pass
 
                 # Thử lấy ảnh qua JS (hỗ trợ cả blob: và https:// URL)
                 base64_data = None
@@ -967,7 +1009,7 @@ class RefImageThread(QThread):
                                 if (!i.src) continue;
                                 let rect = i.getBoundingClientRect();
                                 let size = rect.width * rect.height;
-                                if (size > largestSize && size > 10000) {
+                                if (size > largestSize && size > 5000) {
                                     largestSize = size;
                                     largestEl = i;
                                 }

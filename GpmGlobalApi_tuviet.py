@@ -185,6 +185,9 @@ class Gpm:
         print("win_size:", win_size)
         print("response open_profile:", response)
 
+        if not isinstance(response, dict):
+            raise Exception(f"Lỗi khởi động Profile GPM: {response}")
+
         data = response.get("data", {})
         remote_debugging_port = data.get("remote_debugging_port")
 
@@ -267,4 +270,4 @@ class Gpm:
 #     print("đã xóa profile vừa tạo")
 #     time.sleep(1000)
 
-# test21
+# test22

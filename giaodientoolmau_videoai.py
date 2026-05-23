@@ -748,15 +748,41 @@ class RefImageThread(QThread):
                     click_setting("1x")
                     
                     try:
-                        pattern = re.compile(rf'^\s*Nano Banana Pro\s*$', re.IGNORECASE)
-                        locator = page.get_by_text(pattern).last
-                        if locator.is_visible(timeout=2000):
-                            locator.click(timeout=2000)
+                        # BƯỚC 1: Kích vào phần khoanh đỏ (Mở settings panel)
+                        print("[Ảnh Tham Chiếu] Bước 1: Kích vào phần khoanh đỏ (Mở panel)...")
+                        # Tìm nút dưới cùng có chứa tên model và tỉ lệ '1x'
+                        red_chip = page.locator('button').filter(has_text=re.compile(r'Nano|Veo|Imagen', re.IGNORECASE)).filter(has_text=re.compile(r'1x|16:9|crop', re.IGNORECASE)).last
+                        red_chip.click(force=True, timeout=5000)
+                        page.wait_for_timeout(2000)
+
+                        # BƯỚC 2: Kích vào phần mũi tên khoanh vàng (Mở dropdown model)
+                        print("[Ảnh Tham Chiếu] Bước 2: Kích vào mũi tên khoanh vàng (Mở dropdown)...")
+                        # Tìm nút có aria-haspopup="menu" (đặc trưng của nút dropdown) và chứa tên model
+                        yellow_btn = page.locator('button[aria-haspopup="menu"]').filter(has_text=re.compile(r'Nano|Veo|Imagen', re.IGNORECASE)).first
+                        
+                        # Ưu tiên click thẳng vào thẻ <i> chứa mũi tên bên trong để chắc chắn nhất
+                        arrow_icon = yellow_btn.locator('i').filter(has_text='arrow_drop_down')
+                        if arrow_icon.count() > 0:
+                            arrow_icon.first.click(force=True, timeout=5000)
                         else:
-                            model_btn = page.locator('button:has-text("Veo"), button:has-text("Imagen"), button:has-text("Nano")').last
-                            model_btn.click(timeout=2000)
-                            page.get_by_text(pattern).last.click(timeout=2000)
-                    except: pass
+                            yellow_btn.click(force=True, timeout=5000)
+                        
+                        page.wait_for_timeout(2000)
+
+                        # BƯỚC 3: Chọn option trên cùng (Mô hình mới nhất)
+                        print("[Ảnh Tham Chiếu] Bước 3: Chọn option trên cùng (Mô hình mới nhất)...")
+                        # Lấy popup menu nằm cuối cùng vừa được mở ra
+                        last_menu = page.locator('[role="menu"], [role="listbox"], [data-radix-menu-content]').last
+                        # Lấy option đầu tiên bên trong nó
+                        top_option = last_menu.locator('[role="menuitem"], [role="option"], li, button').first
+                        
+                        top_option.click(force=True, timeout=5000)
+                        page.wait_for_timeout(2000)
+                        
+                        print("[Ảnh Tham Chiếu] ✅ Đã hoàn thành chọn model mới nhất thành công!")
+
+                    except Exception as e_model:
+                        print(f"[Ảnh Tham Chiếu] ⚠️ Lỗi khi chọn model (theo Playwright Locator): {e_model}")
                 except: pass
                 finally:
                     page.keyboard.press("Escape")
@@ -764,10 +790,16 @@ class RefImageThread(QThread):
                 self._check_stop()
 
                 # Gõ prompt
-                # Chờ settings panel đóng hoàn toàn sau Escape trước khi tìm input
-                page.wait_for_timeout(600)
+                print(f"[Ảnh Tham Chiếu] Bắt đầu nhập prompt: {self.prompt_text[:30]}...")
+                
+                # Đảm bảo panel đã đóng bằng cách bấm Escape và click ra ngoài màn hình
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
+                page.mouse.click(10, 10)
+                page.wait_for_timeout(500)
+
                 try:
-                    search_input = page.get_by_placeholder(re.compile(r"tạo gì|create", re.IGNORECASE)).first
+                    search_input = page.get_by_placeholder(re.compile(r"tạo gì|create|tạo", re.IGNORECASE)).first
                     search_input.wait_for(state="visible", timeout=5000)
                 except:
                     search_input = page.locator('textarea:visible, div[contenteditable="true"]:visible').last
@@ -779,9 +811,41 @@ class RefImageThread(QThread):
                     page.wait_for_timeout(300)
                 except:
                     pass
+                
+                # Tập trung vào ô input
                 search_input.click(force=True)
-                search_input.fill(self.prompt_text)
-                search_input.press("Control+Enter")
+                page.wait_for_timeout(500)
+                
+                try: search_input.clear()
+                except: pass
+                
+                # Điền thẳng nguyên khối prompt 1 lần duy nhất (như copy-paste)
+                page.keyboard.insert_text(self.prompt_text)
+                
+                # Đợi điền hết prompt xong mới bấm gửi
+                page.wait_for_timeout(1500)
+                print("[Ảnh Tham Chiếu] Đã điền xong prompt 1 lần. Đang bấm Gửi...")
+                
+                # Ưu tiên click nút Gửi (Mũi tên phải) kế bên ô nhập prompt nếu có
+                try:
+                    # Dùng JS tìm nút chứa svg mũi tên ở gần cuối trang
+                    page.evaluate("""
+                        () => {
+                            let btns = document.querySelectorAll('button');
+                            for (let i = btns.length - 1; i >= Math.max(0, btns.length - 5); i--) {
+                                if (btns[i].querySelector('svg')) {
+                                    btns[i].click();
+                                    return;
+                                }
+                            }
+                        }
+                    """)
+                except: pass
+                
+                page.wait_for_timeout(500)
+                # Dự phòng bấm phím Enter
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(500)
 
                 # Chờ sinh ảnh
                 print("[Ảnh Tham Chiếu] Đang đợi sinh ảnh...")
@@ -952,7 +1016,7 @@ class RefImageThread(QThread):
 
 
 class Manager(QtWidgets.QMainWindow, Ui_Widget):
-    ref_image_signal = pyqtSignal(bool, str)
+    ref_image_signal = pyqtSignal(bool, object)
 
     def __init__(self):
         super().__init__()
@@ -1716,14 +1780,24 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                         self.ref_image_signal.emit(False, f"Lỗi parse JSON: {str(e)}\n\nResponse:\n{response.text[:200]}")
                         return
                         
-                    prompt_text = ""
+                    res_dict = {}
                     if isinstance(res_json, list) and len(res_json) > 0 and isinstance(res_json[0], dict):
-                        prompt_text = res_json[0].get("Prompt ảnh tham chiếu", "")
+                        res_dict = res_json[0]
                     elif isinstance(res_json, dict):
-                        prompt_text = res_json.get("Prompt ảnh tham chiếu", "")
+                        res_dict = res_json
                         
+                    prompt_text = res_dict.get("Prompt ảnh tham chiếu", "")
+                    
                     if prompt_text:
-                        self.ref_image_signal.emit(True, prompt_text)
+                        result_payload = {
+                            "prompt": prompt_text,
+                            "phong_cach": data.get("phong_cach", ""),
+                            "ngon_ngu": data.get("ngon_ngu", ""),
+                            "mo_ta_them": data.get("mo_ta_them", ""),
+                            "Clone Content": data.get("link_youtube", ""),
+                            "Clone %": data.get("ty_le_copy", "")
+                        }
+                        self.ref_image_signal.emit(True, result_payload)
                     else:
                         self.ref_image_signal.emit(False, f"API không có trường 'Prompt ảnh tham chiếu'. Dữ liệu trả về: {str(res_json)[:300]}")
                 else:
@@ -1743,17 +1817,30 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 self.veo3_btn_create_ref.setEnabled(True)
 
         if success:
+            # result_text is a dictionary
+            data_dict = result_text
+            prompt_val = data_dict.get("prompt", "")
+            
+            # Save the 5 extra fields for later use in _send_ref_image_to_webhook
+            self.ref_image_extra_info = {
+                "phong_cach": data_dict.get("phong_cach", ""),
+                "ngon_ngu": data_dict.get("ngon_ngu", ""),
+                "mo_ta_them": data_dict.get("mo_ta_them", ""),
+                "Clone Content": data_dict.get("Clone Content", ""),
+                "Clone %": data_dict.get("Clone %", "")
+            }
+            
             if hasattr(self, 'veo3_btn_create_ref'):
                 self.veo3_btn_create_ref.setText("⏳ Đang tải ảnh nền Playwright...")
                 # Nút vẫn đang disable từ lúc bấm, sẽ khôi phục khi ảnh tải xong
                 
             if hasattr(self, 'veo3_ref_txt'):
-                self.full_ref_prompt = result_text
+                self.full_ref_prompt = prompt_val
                 
                 # Cắt ngắn văn bản nếu quá dài để không làm vỡ layout (độ dài an toàn ~ 180 ký tự)
-                display_text = result_text
-                if len(result_text) > 180:
-                    display_text = result_text[:180] + "... <a href='#view_full' style='color:#60a5fa;'>[Xem đầy đủ]</a>"
+                display_text = prompt_val
+                if len(prompt_val) > 180:
+                    display_text = prompt_val[:180] + "... <a href='#view_full' style='color:#60a5fa;'>[Xem đầy đủ]</a>"
                 
                 self.veo3_ref_txt.setTextFormat(QtCore.Qt.RichText)
                 self.veo3_ref_txt.setText(display_text)
@@ -1855,8 +1942,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
     def _send_ref_image_to_webhook(self, prompt_text, image_path):
         """Gửi POST (multipart) đến webhook với prompt và ảnh tham chiếu. Chạy nền để không chặn UI."""
         WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/webhook_get_hinh_tham_chieu_tool"
+        extra_info = getattr(self, 'ref_image_extra_info', {})
 
-        def _worker(prompt, img_path):
+        def _worker(prompt, img_path, extra_data):
             try:
                 print(f"[Webhook Ảnh TC] Đang gửi POST đến {WEBHOOK_URL} ...")
                 with open(img_path, "rb") as img_file:
@@ -1864,15 +1952,26 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                         "image": (os.path.basename(img_path), img_file, "image/png")
                     }
                     data = {
-                        "prompt": prompt
+                        "prompt": prompt,
+                        "phong_cach": extra_data.get("phong_cach", ""),
+                        "ngon_ngu": extra_data.get("ngon_ngu", ""),
+                        "mo_ta_them": extra_data.get("mo_ta_them", ""),
+                        "Clone Content": extra_data.get("Clone Content", ""),
+                        "Clone %": extra_data.get("Clone %", "")
                     }
+                    try:
+                        with open("debug_webhook.txt", "w", encoding="utf-8") as df:
+                            import json
+                            df.write(json.dumps(data, ensure_ascii=False, indent=2))
+                    except Exception as e:
+                        pass
                     resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=60)
                 print(f"[Webhook Ảnh TC] ✅ Gửi xong — HTTP {resp.status_code}: {resp.text[:200]}")
             except Exception as e:
                 print(f"[Webhook Ảnh TC] ❌ Lỗi gửi webhook: {e}")
 
         import threading
-        t = threading.Thread(target=_worker, args=(prompt_text, image_path), daemon=True)
+        t = threading.Thread(target=_worker, args=(prompt_text, image_path, extra_info), daemon=True)
         t.start()
 
     def _show_full_ref_prompt(self, link):

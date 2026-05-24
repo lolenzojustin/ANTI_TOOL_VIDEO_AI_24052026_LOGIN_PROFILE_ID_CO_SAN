@@ -270,4 +270,4 @@ class Gpm:
 #     print("đã xóa profile vừa tạo")
 #     time.sleep(1000)
 
-# test23
+# test24

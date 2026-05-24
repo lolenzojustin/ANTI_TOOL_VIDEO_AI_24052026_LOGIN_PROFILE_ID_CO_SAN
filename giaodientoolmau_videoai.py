@@ -2124,6 +2124,14 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
+    
+    # ── Kiểm tra License Key trước khi vào tool ──
+    from license_key_dialog import LicenseKeyDialog
+    license_dialog = LicenseKeyDialog()
+    if not license_dialog.exec_accepted():
+        # Người dùng đóng dialog hoặc nhập sai key → thoát ứng dụng
+        sys.exit(0)
+    
     window = Manager()
     window.showMaximized()
     sys.exit(app.exec_())

@@ -1059,13 +1059,26 @@ class RefImageThread(QThread):
 
 class Manager(QtWidgets.QMainWindow, Ui_Widget):
     ref_image_signal = pyqtSignal(bool, object)
+    ref_image_webhook_signal = pyqtSignal(bool, object)
 
     def __init__(self):
         super().__init__()
         self.setupUi(self)
 
         self.config = {}  # Dictionary để lưu config values không phải widget
-        self.config_path = os.path.join(os.path.dirname(__file__), "config.env")
+        # Tìm config.env từ thư mục _internal khi chạy EXE, hoặc thư mục chứa .py script
+        if getattr(sys, 'frozen', False):
+            # Chạy từ EXE (PyInstaller) - tìm trong _internal hoặc cùng thư mục exe
+            exe_dir = os.path.dirname(sys.executable)
+            internal_dir = os.path.join(exe_dir, '_internal')
+            if os.path.exists(os.path.join(internal_dir, 'config.env')):
+                base_path = internal_dir
+            else:
+                base_path = exe_dir
+        else:
+            # Chạy từ Python source
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        self.config_path = os.path.join(base_path, "config.env")
         self._config_map = {
             "AI_MODEL": self.cb_ai_model,
             "ASYNC_API_KEY": self.le_api_key,
@@ -1143,6 +1156,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         if hasattr(self, 'veo3_btn_create_ref'):
             self.veo3_btn_create_ref.clicked.connect(self.createReferenceImage)
             self.ref_image_signal.connect(self._on_ref_image_result)
+            self.ref_image_webhook_signal.connect(self._on_ref_image_webhook_result)
 
         # Kết nối nút "Mở thư mục xuất này" → mở folder chứa video/ảnh
         if hasattr(self, 'btn_open_folder'):
@@ -1833,11 +1847,13 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                     if prompt_text:
                         result_payload = {
                             "prompt": prompt_text,
-                            "phong_cach": data.get("phong_cach", ""),
-                            "ngon_ngu": data.get("ngon_ngu", ""),
-                            "mo_ta_them": data.get("mo_ta_them", ""),
-                            "Clone Content": data.get("link_youtube", ""),
-                            "Clone %": data.get("ty_le_copy", "")
+                            "phong_cach": res_dict.get("phong_cach", ""),
+                            "ngon_ngu": res_dict.get("ngon_ngu", ""),
+                            "mo_ta_them": res_dict.get("mo_ta_them", ""),
+                            "Clone Content": res_dict.get("Clone Content", ""),
+                            "Clone %": res_dict.get("Clone %", ""),
+                            "giong_nhan_vat": res_dict.get("giong_nhan_vat", ""),
+                            "so_canh": res_dict.get("so_canh", "")
                         }
                         self.ref_image_signal.emit(True, result_payload)
                     else:
@@ -1863,13 +1879,15 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             data_dict = result_text
             prompt_val = data_dict.get("prompt", "")
             
-            # Save the 5 extra fields for later use in _send_ref_image_to_webhook
+            # Save the extra fields for later use in _send_ref_image_to_webhook
             self.ref_image_extra_info = {
                 "phong_cach": data_dict.get("phong_cach", ""),
                 "ngon_ngu": data_dict.get("ngon_ngu", ""),
                 "mo_ta_them": data_dict.get("mo_ta_them", ""),
                 "Clone Content": data_dict.get("Clone Content", ""),
-                "Clone %": data_dict.get("Clone %", "")
+                "Clone %": data_dict.get("Clone %", ""),
+                "giong_nhan_vat": data_dict.get("giong_nhan_vat", ""),
+                "so_canh": data_dict.get("so_canh", "")
             }
             
             if hasattr(self, 'veo3_btn_create_ref'):
@@ -1994,12 +2012,14 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                         "image": (os.path.basename(img_path), img_file, "image/png")
                     }
                     data = {
-                        "prompt": prompt,
+                        "Prompt ảnh tham chiếu": prompt,
                         "phong_cach": extra_data.get("phong_cach", ""),
                         "ngon_ngu": extra_data.get("ngon_ngu", ""),
                         "mo_ta_them": extra_data.get("mo_ta_them", ""),
                         "Clone Content": extra_data.get("Clone Content", ""),
-                        "Clone %": extra_data.get("Clone %", "")
+                        "Clone %": extra_data.get("Clone %", ""),
+                        "giong_nhan_vat": extra_data.get("giong_nhan_vat", ""),
+                        "so_canh": extra_data.get("so_canh", "")
                     }
                     try:
                         with open("debug_webhook.txt", "w", encoding="utf-8") as df:
@@ -2009,12 +2029,76 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                         pass
                     resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=60)
                 print(f"[Webhook Ảnh TC] ✅ Gửi xong — HTTP {resp.status_code}: {resp.text[:200]}")
+                if resp.status_code == 200:
+                    try:
+                        res_json = resp.json()
+                        self.ref_image_webhook_signal.emit(True, res_json)
+                    except Exception as e:
+                        print(f"[Webhook Ảnh TC] ❌ Lỗi parse JSON: {e}")
+                        self.ref_image_webhook_signal.emit(False, None)
+                else:
+                    self.ref_image_webhook_signal.emit(False, None)
             except Exception as e:
                 print(f"[Webhook Ảnh TC] ❌ Lỗi gửi webhook: {e}")
+                self.ref_image_webhook_signal.emit(False, None)
 
         import threading
         t = threading.Thread(target=_worker, args=(prompt_text, image_path, extra_info), daemon=True)
         t.start()
+
+    def _on_ref_image_webhook_result(self, success, result_data):
+        if success:
+            try:
+                items = []
+                def extract_items(data):
+                    if isinstance(data, list):
+                        for x in data:
+                            extract_items(x)
+                    elif isinstance(data, dict):
+                        keys_lower = {str(k).lower(): k for k in data.keys()}
+                        if "scenenumber" in keys_lower and "content" in keys_lower:
+                            scene_num = data[keys_lower["scenenumber"]]
+                            content = data[keys_lower["content"]]
+                            items.append({"sceneNumber": scene_num, "content": content})
+                        else:
+                            for v in data.values():
+                                extract_items(v)
+                                
+                extract_items(result_data)
+                
+                if not items:
+                    QMessageBox.warning(self, "Lỗi", f"Không tìm thấy cấu trúc 'sceneNumber' và 'content' trong kết quả trả về!\n\nChi tiết API: {str(result_data)[:500]}")
+                    return
+
+                current_tab_index = self.tabWidget.currentIndex()
+                if current_tab_index == 0:
+                    target_tab = self.tab_veo3
+                else:
+                    target_tab = self.tab_kol
+                    
+                prompt_boxes = target_tab.findChildren(QtWidgets.QTextEdit, "promptBox")
+                updated_count = 0
+                
+                for item in items:
+                    try:
+                        scene_num = int(item.get("sceneNumber"))
+                        content = str(item.get("content", ""))
+                        if 1 <= scene_num <= len(prompt_boxes):
+                            prompt_boxes[scene_num - 1].setPlainText(content)
+                            updated_count += 1
+                    except (ValueError, TypeError):
+                        pass
+                            
+                if updated_count > 0:
+                    QMessageBox.information(self, "Thành công", f"Đã cập nhật {updated_count} Prompt từ ảnh tham chiếu lên giao diện!")
+                else:
+                    QMessageBox.warning(self, "Lỗi", f"Tìm thấy dữ liệu nhưng số cảnh không hợp lệ hoặc lớn hơn số box trên giao diện!\nDữ liệu mẫu: {items[:2]}")
+            except Exception as e:
+                print(f"[Webhook Ảnh TC] Lỗi update UI: {e}")
+                QMessageBox.warning(self, "Lỗi", f"Đã xảy ra lỗi khi hiển thị dữ liệu lên giao diện:\n{e}")
+        else:
+            if result_data:
+                QMessageBox.warning(self, "Lỗi Webhook", f"Lỗi từ API Webhook:\n{result_data}")
 
     def _show_full_ref_prompt(self, link):
         """Hiển thị hộp thoại chứa toàn bộ Prompt nếu người dùng bấm vào '[Xem đầy đủ]'."""
